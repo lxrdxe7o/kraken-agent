@@ -298,6 +298,7 @@ mod tests {
         assert!(toolbar.items.is_empty());
     }
 
+#[test]
     fn test_toolbar_add_item() {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();

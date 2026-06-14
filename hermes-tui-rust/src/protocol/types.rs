@@ -191,23 +191,26 @@ pub struct SessionListResponse {
 pub struct MessageDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<MessageRole>,
-    pub delta: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub done: Option<bool>,
+    pub rendered: Option<String>,
 }
-
 /// Message complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageComplete {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    pub role: MessageRole,
-    pub content: String,
+    pub text: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<String>,
 }
-
-// ============================================================================
 // Tool Types
 // ============================================================================
 
@@ -613,21 +616,20 @@ mod tests {
             _ => panic!("Wrong variant"),
         }
     }
-
+    
     #[test]
     fn test_message_delta_serialization() {
         let delta = MessageDelta {
             session_id: Some("test-key".to_string()),
-            role: Some(MessageRole::Assistant),
-            delta: "Hello".to_string(),
-            done: Some(false),
+            text: "Hello".to_string(),
+            rendered: None,
         };
         
         let serialized = serde_json::to_string(&delta).unwrap();
         let deserialized: MessageDelta = serde_json::from_str(&serialized).unwrap();
         
         assert_eq!(deserialized.session_id, Some("test-key".to_string()));
-        assert_eq!(deserialized.delta, "Hello");
+        assert_eq!(deserialized.text, "Hello");
     }
 
     #[test]

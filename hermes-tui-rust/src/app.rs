@@ -1191,78 +1191,46 @@ impl App {
         Ok(())
     }
     
-    /// Handle message delta (streaming)
-    fn handle_message_delta(&mut self, delta: MessageDelta) -> Result<()> {
-        debug!("Message delta: role={:?}, delta='{}', done={:?}",
-            delta.role, delta.delta, delta.done);
-
-        // Get or create a streaming message
-        let session_id = delta.session_id.clone().unwrap_or_default();
-        let message_id = format!("{}:streaming", session_id);
-        
-        // Check if we have an existing streaming message for this session
-        if let Some(last_msg) = self.messages().last() {
-            if last_msg.message_id == Some(message_id.clone()) {
-                // Need to update the message - get mutable access and clone first
-                if let Some(last_msg_mut) = self.messages_mut().last_mut() {
-                    let updated_message = {
-                        last_msg_mut.content.push_str(&delta.delta);
-                        last_msg_mut.streaming = true;
-                        last_msg_mut.complete = delta.done.unwrap_or(false);
-                        last_msg_mut.clone()
-                    };
-                    
-                    // Update chat component with cloned message
-                    self.chat_component_mut().update_message(updated_message);
-                }
-                return Ok(());
-            }
-        }
-        
-        // Create new streaming message
-        let role = delta.role.unwrap_or(MessageRole::Assistant);
-        let mut message = Message::streaming_delta(role, delta.delta, Some(message_id));
-        message.complete = delta.done.unwrap_or(false);
-        
-        // Add to both message history and chat component
-        let message_clone = message.clone();
-        self.messages_mut().add_message(message);
-        self.chat_component_mut().add_message(message_clone);
-        
-        Ok(())
-    }
-    
-    /// Handle message complete
-    fn handle_message_complete(&mut self, complete: MessageComplete) -> Result<()> {
-        debug!("Message complete: role={:?}, content length={}",
-            complete.role, complete.content.len());
-
-        self.thinking = false;
-        
-        let message = Message::new(complete.role, complete.content);
-        
-        self.messages_mut().add_message(message.clone());
-        self.chat_component_mut().add_message(message);
-        
-        // Auto-scroll to bottom on new message
-        self.chat_component_mut().scroll_to_bottom();
-        
-        Ok(())
-    }
-
-    /// Handle session info message
+    /// Handle session info
     fn handle_session_info(&mut self, info_val: serde_json::Value) -> Result<()> {
-        // The gateway sends session.info as a JSON-RPC notification with the
-        // session_id at the GatewayEvent level (stripped before dispatch) and
-        // model/provider/cwd/branch/running in the payload.
-        // We log it here; the session was already added to the local store
-        // via handle_session_create.
         if let Some(model) = info_val.get("model").and_then(|v| v.as_str()) {
             debug!("Session info: model={}", model);
         }
         if let Some(provider) = info_val.get("provider").and_then(|v| v.as_str()) {
             debug!("Session info: provider={}", provider);
         }
+        Ok(())
+    }
+    
+    fn handle_message_delta(&mut self, delta: MessageDelta) -> Result<()> {
+        debug!("Message delta: text='{}'", delta.text);
+        let session_id = delta.session_id.clone().unwrap_or_default();
+        let message_id = format!("{}:streaming", session_id);
+        if let Some(last_msg) = self.messages().last() {
+            if last_msg.message_id == Some(message_id.clone()) {
+                if let Some(last_msg_mut) = self.messages_mut().last_mut() {
+                    last_msg_mut.content.push_str(&delta.text);
+                    let updated_message = last_msg_mut.clone();
+                    self.chat_component_mut().update_message(updated_message);
+                }
+                return Ok(());
+            }
+        }
+        let mut message = Message::streaming_delta(MessageRole::Assistant, delta.text, Some(message_id));
+        message.complete = false;
+        let message_clone = message.clone();
+        self.messages_mut().add_message(message);
+        self.chat_component_mut().add_message(message_clone);
+        Ok(())
+    }
+    
+    fn handle_message_complete(&mut self, complete: MessageComplete) -> Result<()> {
+        debug!("Message complete: text length={}", complete.text.len());
+        self.thinking = false;
+        let message = Message::new(MessageRole::Assistant, complete.text);
+        self.messages_mut().add_message(message.clone());
+        self.chat_component_mut().add_message(message);
+        self.chat_component_mut().scroll_to_bottom();
         Ok(())
     }
     
