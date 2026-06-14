@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+
 /// Base message envelope for JSON-RPC
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcMessage {
@@ -211,14 +212,20 @@ pub struct MessageComplete {
 // ============================================================================
 
 /// Tool start notification
+/// Tool start notification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolStart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Tool name — gateway sends as "name"
+    #[serde(rename = "name")]
     pub tool_name: String,
+    /// Call ID — gateway sends as "tool_id"
+    #[serde(rename = "tool_id")]
     pub call_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<HashMap<String, serde_json::Value>>,
+    /// Tool args as JSON string — gateway sends as "args_text"
+    #[serde(rename = "args_text", default)]
+    pub arguments: Option<String>,
 }
 
 /// Tool progress update
@@ -235,9 +242,14 @@ pub struct ToolProgress {
 pub struct ToolComplete {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Call ID — gateway sends as "tool_id"
+    #[serde(rename = "tool_id")]
     pub call_id: String,
-    pub result: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Tool result — gateway sends as a JSON object
+    #[serde(default)]
+    pub result: serde_json::Value,
+    /// Duration in seconds from gateway — stored as ms
+    #[serde(rename = "duration_s", default, deserialize_with = "secs_to_ms")]
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -641,8 +653,8 @@ mod tests {
         let tool = ToolComplete {
             session_id: Some("test-key".to_string()),
             call_id: "call-123".to_string(),
-            result: "{\"success\": true}".to_string(),
-            duration_ms: Some(150),
+            result: serde_json::json!({"success": true}),
+            duration_ms: None,
             error: None,
         };
         
@@ -650,7 +662,21 @@ mod tests {
         let deserialized: ToolComplete = serde_json::from_str(&serialized).unwrap();
         
         assert_eq!(deserialized.call_id, "call-123");
-        assert_eq!(deserialized.result, "{\"success\": true}");
-        assert_eq!(deserialized.duration_ms, Some(150));
+        assert_eq!(deserialized.result, serde_json::json!({"success": true}));
+        assert_eq!(deserialized.duration_ms, None);
     }
+    
+    #[test]
+    fn test_secs_to_ms_conversion() {
+        // Verify secs_to_ms deserializer: 0.15s → 150ms
+        let json = r#"{"tool_id":"t1","result":null,"duration_s":0.15}"#;
+        let tool: ToolComplete = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.duration_ms, Some(150));
+    }
+}
+
+/// Deserialize gateway's `duration_s` (float seconds) to `Option<u64>` milliseconds
+pub fn secs_to_ms<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let secs: Option<f64> = Option::deserialize(d)?;
+    Ok(secs.map(|s| (s * 1000.0).round() as u64))
 }

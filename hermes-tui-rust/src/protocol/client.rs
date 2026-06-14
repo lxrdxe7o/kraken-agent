@@ -89,12 +89,20 @@ impl GatewayClient {
                         if let Some(method) = &rpc.method {
                             if method == "event" {
                                 if let Some(ref params) = rpc.params {
+                                    // The gateway sometimes omits payload (e.g. message.start).
+                                    // Inject a null payload so the tagged enum parser doesn't fail.
+                                    let mut params = params.clone();
+                                    if !params.as_object().map(|o| o.contains_key("payload")).unwrap_or(false) {
+                                        if let Some(obj) = params.as_object_mut() {
+                                            obj.insert("payload".to_string(), serde_json::Value::Null);
+                                        }
+                                    }
                                     match serde_json::from_value::<GatewayEvent>(params.clone()) {
                                         Ok(event) => {
                                             let _ = response_sender.send(event.data);
                                         }
                                         Err(e) => {
-                                            error!("GatewayClient: Failed to parse event params: {} - Params: {:?}", e, params);
+                                            error!("GatewayClient: Failed to parse event params: {} - Params: {:?}", e, &rpc.params);
                                         }
                                     }
                                 }

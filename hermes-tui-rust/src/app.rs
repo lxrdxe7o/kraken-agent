@@ -1275,8 +1275,7 @@ impl App {
         // Create a tool card for this tool call
         let data = ToolCardData::running(&tool_start.tool_name)
             .with_arguments(
-                serde_json::to_string(&tool_start.arguments.clone().unwrap_or_default())
-                    .unwrap_or_default()
+                tool_start.arguments.clone().unwrap_or_default()
             );
         self.card_manager_mut().add_tool_card(data);
 
@@ -1324,7 +1323,7 @@ impl App {
             self.card_manager_mut().update_tool_status(
                 &tool_complete.call_id,
                 ToolStatus::Completed,
-                Some(tool_complete.result.clone()),
+                Some(tool_complete.result.to_string()),
                 None,
             );
         }
@@ -1333,7 +1332,7 @@ impl App {
         let result_text = if let Some(ref error) = tool_complete.error {
             format!("Error: {}", error)
         } else {
-            tool_complete.result.clone()
+            tool_complete.result.to_string()
         };
         
         let message = Message::tool(
