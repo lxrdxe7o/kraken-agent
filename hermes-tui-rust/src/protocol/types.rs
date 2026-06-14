@@ -257,6 +257,7 @@ pub struct ApprovalRequest {
 pub struct ApprovalResponse {
     pub request_id: String,
     pub approved: bool,
+    pub choice: String,
 }
 
 // ============================================================================

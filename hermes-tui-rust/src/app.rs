@@ -23,6 +23,10 @@ use crate::protocol::types::*;
 use crate::state::{config::TuiConfig, messages::{Message, MessageHistory}, session::SessionManager};
 use crate::state::config::InputMode;
 use crate::ui::{chat::ChatComponent, composer::InputComposer, toolbar::Toolbar};
+use crate::ui::prompts::PromptManager;
+use crate::ui::completions::CompletionPopup;
+use crate::ui::session_picker::SessionPicker;
+use crate::handlers::mouse::MouseContext;
 
 /// Main application struct
 ///
@@ -62,6 +66,16 @@ pub struct App {
     chat_component: ChatComponent,
     /// Input composer for user text input
     input_composer: InputComposer,
+    /// Prompt manager for approval/clarify/secret overlays
+    prompt_manager: PromptManager,
+    /// Pending approval request ID
+    pending_approval_id: Option<String>,
+    /// Autocomplete completions popup widget
+    completion_popup: CompletionPopup,
+    /// Session picker popup widget
+    session_picker: SessionPicker,
+    /// Mouse interaction context
+    mouse_context: MouseContext,
 }
 
 impl App {
@@ -111,6 +125,11 @@ impl App {
             chat_component: ChatComponent::new(chat_colors_rgb, true),
             input_composer: InputComposer::new(chat_colors_rgb),
             toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
+            prompt_manager: PromptManager::new(chat_colors_rgb),
+            pending_approval_id: None,
+            completion_popup: CompletionPopup::new(chat_colors_rgb),
+            session_picker: SessionPicker::new(chat_colors_rgb),
+            mouse_context: MouseContext::new(),
         })
     }
 
@@ -205,6 +224,36 @@ impl App {
     /// Get a mutable reference to the input composer
     pub fn input_composer_mut(&mut self) -> &mut InputComposer {
         &mut self.input_composer
+    }
+
+    /// Get a reference to the prompt manager
+    pub fn prompt_manager(&self) -> &PromptManager {
+        &self.prompt_manager
+    }
+
+    /// Get a mutable reference to the prompt manager
+    pub fn prompt_manager_mut(&mut self) -> &mut PromptManager {
+        &mut self.prompt_manager
+    }
+
+    /// Get a reference to the completion popup
+    pub fn completion_popup(&self) -> &CompletionPopup {
+        &self.completion_popup
+    }
+
+    /// Get a mutable reference to the completion popup
+    pub fn completion_popup_mut(&mut self) -> &mut CompletionPopup {
+        &mut self.completion_popup
+    }
+
+    /// Get a reference to the session picker
+    pub fn session_picker(&self) -> &SessionPicker {
+        &self.session_picker
+    }
+
+    /// Get a mutable reference to the session picker
+    pub fn session_picker_mut(&mut self) -> &mut SessionPicker {
+        &mut self.session_picker
     }
 
     /// Get a reference to the toolbar
@@ -382,6 +431,157 @@ impl App {
         if self.check_quit_key(key) {
             return Ok(());
         }
+
+        // If a prompt is active, let the prompt manager handle keys
+        if self.prompt_manager.has_active_prompt() {
+            if self.prompt_manager.is_approval_active() {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        self.prompt_manager.approve();
+                        if let Some(req_id) = self.pending_approval_id.take() {
+                            let response = TuiRequest::ApprovalRespond(ApprovalResponse {
+                                request_id: req_id,
+                                approved: true,
+                                choice: "once".to_string(),
+                            });
+                            let _ = self.send_gateway_request(response);
+                        }
+                        self.input_composer_mut().set_active(true);
+                        self.set_input_mode(InputMode::Insert);
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                        self.prompt_manager.deny();
+                        if let Some(req_id) = self.pending_approval_id.take() {
+                            let response = TuiRequest::ApprovalRespond(ApprovalResponse {
+                                request_id: req_id,
+                                approved: false,
+                                choice: "deny".to_string(),
+                            });
+                            let _ = self.send_gateway_request(response);
+                        }
+                        self.input_composer_mut().set_active(true);
+                        self.set_input_mode(InputMode::Insert);
+                    }
+                    KeyCode::Esc => {
+                        self.prompt_manager.cancel_all();
+                        self.input_composer_mut().set_active(true);
+                        self.set_input_mode(InputMode::Insert);
+                    }
+                    _ => {}
+                }
+            } else if self.prompt_manager.is_clarify_active() {
+                if let Some(prompt) = &mut self.prompt_manager.clarify_prompt {
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            prompt.append_response(&c.to_string());
+                        }
+                        KeyCode::Backspace => {
+                            let mut resp = prompt.response().to_string();
+                            resp.pop();
+                            prompt.set_response(resp);
+                        }
+                        KeyCode::Enter => {
+                            let _val = prompt.submit();
+                            self.input_composer_mut().set_active(true);
+                            self.set_input_mode(InputMode::Insert);
+                        }
+                        KeyCode::Esc => {
+                            prompt.cancel();
+                            self.input_composer_mut().set_active(true);
+                            self.set_input_mode(InputMode::Insert);
+                        }
+                        _ => {}
+                    }
+                }
+            } else if self.prompt_manager.is_secret_active() {
+                if let Some(prompt) = &mut self.prompt_manager.secret_prompt {
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            prompt.append_secret(c);
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop_secret();
+                        }
+                        KeyCode::Enter => {
+                            let _val = prompt.submit();
+                            self.input_composer_mut().set_active(true);
+                            self.set_input_mode(InputMode::Insert);
+                        }
+                        KeyCode::Esc => {
+                            prompt.cancel();
+                            self.input_composer_mut().set_active(true);
+                            self.set_input_mode(InputMode::Insert);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // If session picker is visible, route keys to it
+        if self.session_picker.is_visible() {
+            match key.code {
+                KeyCode::Down => {
+                    self.session_picker.select_next();
+                }
+                KeyCode::Up => {
+                    self.session_picker.select_prev();
+                }
+                KeyCode::Enter => {
+                    if let Some(session) = self.session_picker.selected_session().cloned() {
+                        let request = SessionResumeRequest {
+                            session_id: session.id.clone(),
+                        };
+                        let tui_request = TuiRequest::SessionResume(request);
+                        let _ = self.send_gateway_request(tui_request);
+
+                        // Show feedback to user
+                        let title = if session.title.is_empty() { "Unnamed".to_string() } else { session.title.clone() };
+                        let system_message = Message::system(format!("Resuming session: {}", title));
+                        self.messages_mut().add_message(system_message.clone());
+                        self.chat_component_mut().add_message(system_message);
+                        self.chat_component_mut().scroll_to_bottom();
+                        self.session_picker.hide();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.session_picker.hide();
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // If completion popup is visible, route keys to it
+        if self.completion_popup.is_visible() {
+            match key.code {
+                KeyCode::Down => {
+                    self.completion_popup.select_next();
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    self.completion_popup.select_prev();
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    if let Some(item) = self.completion_popup.selected_item().cloned() {
+                        // Set the input composer input to item text
+                        self.input_composer.set_input(&item.text);
+                        self.current_input = item.text.clone();
+                        self.completion_popup.hide();
+                    }
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.completion_popup.hide();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+
         
         // Check for Enter key in Insert mode - submit prompt
         let KeyEvent { code, modifiers, .. } = key;
@@ -605,12 +805,6 @@ impl App {
             return true;
         }
         
-        // Esc in normal mode - Exit
-        if code == KeyCode::Esc {
-            info!("Esc pressed, exiting");
-            self.running = false;
-            return true;
-        }
         
         false
     }
@@ -979,17 +1173,18 @@ impl App {
         
         Ok(())
     }
-    /// Handle approval request
     fn handle_approval_request(&mut self, request: ApprovalRequest) -> Result<()> {
         info!("Approval request: {} - {}", request.tool_name, request.message);
         
+        self.pending_approval_id = Some(request.request_id.clone());
+
         // Show approval prompt to user
+        self.prompt_manager.show_approval(
+            format!("{} - {}", request.tool_name, request.message),
+            Some(request.tool_name),
+        );
         self.input_composer_mut().set_active(false);
         self.set_input_mode(InputMode::Normal);
-        
-        // TODO: Add approval prompt to a prompt manager
-        // For now, just log it
-        debug!("Showing approval prompt for: {}", request.message);
         
         Ok(())
     }

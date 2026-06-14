@@ -9,6 +9,8 @@ pub mod cards;
 pub mod prompts;
 pub mod hashline;
 pub mod subagent;
+pub mod completions;
+pub mod session_picker;
 
 // Re-export when modules are implemented
 // pub use chat::*;

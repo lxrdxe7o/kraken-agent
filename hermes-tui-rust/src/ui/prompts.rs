@@ -561,13 +561,13 @@ impl SecretPrompt {
 #[derive(Debug, Clone)]
 pub struct PromptManager {
     /// Current approval prompt
-    approval_prompt: Option<ApprovalPrompt>,
+    pub(crate) approval_prompt: Option<ApprovalPrompt>,
     /// Current clarification prompt
-    clarify_prompt: Option<ClarifyPrompt>,
+    pub(crate) clarify_prompt: Option<ClarifyPrompt>,
     /// Current secret prompt
-    secret_prompt: Option<SecretPrompt>,
+    pub(crate) secret_prompt: Option<SecretPrompt>,
     /// Colors from configuration
-    colors: ChatColorsRgb,
+    pub(crate) colors: ChatColorsRgb,
 }
 
 impl PromptManager {
@@ -604,6 +604,21 @@ impl PromptManager {
         self.approval_prompt.as_ref().map_or(false, |p| p.is_pending())
             || self.clarify_prompt.as_ref().map_or(false, |p| p.is_active())
             || self.secret_prompt.as_ref().map_or(false, |p| p.is_active())
+    }
+
+    /// Check if approval prompt is active
+    pub fn is_approval_active(&self) -> bool {
+        self.approval_prompt.as_ref().map_or(false, |p| p.is_pending())
+    }
+
+    /// Check if clarification prompt is active
+    pub fn is_clarify_active(&self) -> bool {
+        self.clarify_prompt.as_ref().map_or(false, |p| p.is_active())
+    }
+
+    /// Check if secret prompt is active
+    pub fn is_secret_active(&self) -> bool {
+        self.secret_prompt.as_ref().map_or(false, |p| p.is_active())
     }
 
     /// Show an approval prompt

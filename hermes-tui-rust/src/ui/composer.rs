@@ -187,6 +187,14 @@ impl InputComposer {
         self.cancel_history();
     }
 
+    /// Insert text at the current cursor position
+    pub fn insert_text(&mut self, text: &str) {
+        let pos = self.cursor_pos.min(self.input.len());
+        self.input.insert_str(pos, text);
+        self.cursor_pos = pos + text.len();
+        self.cancel_history();
+    }
+
     /// Add to history
     pub fn add_to_history(&mut self, text: String) {
         if text.is_empty() {
