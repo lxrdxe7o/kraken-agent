@@ -244,6 +244,11 @@ impl MessageHistory {
         self.messages.back()
     }
 
+    /// Check if the last message is currently streaming
+    pub fn has_streaming_message(&self) -> bool {
+        self.last().map_or(false, |m| m.is_streaming())
+    }
+
     /// Get the last message (mutable)
     pub fn last_mut(&mut self) -> Option<&mut Message> {
         self.messages.back_mut()
