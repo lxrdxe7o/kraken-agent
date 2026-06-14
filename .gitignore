@@ -31,6 +31,12 @@ test_durations.json
 tmp/
 temp_vision_images/
 hermes-*/*
+# Allow hermes-tui-rust directory (Rust TUI project) - exception to hermes-*/* rule
+!hermes-tui-rust/
+!hermes-tui-rust/**/
+!hermes-tui-rust/*.md
+!hermes-tui-rust/*.toml
+!hermes-tui-rust/Cargo.lock
 examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl

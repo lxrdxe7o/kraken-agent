@@ -152,7 +152,7 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
         argv = sys.argv[1:]
     if "--cli" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv or "--tui-rust" in argv:
         return True
     return _config_default_interface_early() == "tui"
 
@@ -2110,7 +2110,7 @@ def _resolve_use_tui(args) -> bool:
     """
     if getattr(args, "cli", False):
         return False
-    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+    if getattr(args, "tui", False) or getattr(args, "tui_rust", False) or os.environ.get("HERMES_TUI") == "1":
         return True
     try:
         from hermes_cli.config import load_config
@@ -2120,6 +2120,102 @@ def _resolve_use_tui(args) -> bool:
     except Exception:
         return False
 
+def _resolve_use_tui_rust(args) -> bool:
+    """Check if the user explicitly requested the Rust-based TUI.
+    
+    Returns True only when --tui-rust was passed, never for --tui or env.
+    """
+    return bool(getattr(args, "tui_rust", False))
+
+
+def _launch_tui_rust(
+    resume_session_id: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    query: Optional[str] = None,
+    worktree: bool = False,
+):
+    """Launch the Rust-based TUI binary."""
+    rust_tui_dir = PROJECT_ROOT / "hermes-tui-rust"
+    rust_binary = rust_tui_dir / "target" / "release" / "hermes-tui-rust"
+    
+    # Fall back to debug build
+    if not rust_binary.exists():
+        rust_binary = rust_tui_dir / "target" / "debug" / "hermes-tui-rust"
+    
+    if not rust_binary.exists():
+        print(
+            "Rust TUI binary not found. Build it first with:\n"
+            f"  cd {rust_tui_dir} && cargo build --release\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    
+    env = os.environ.copy()
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env(env=env)
+    except Exception:
+        logger.debug("Failed to apply terminal config bridge for Rust TUI launch", exc_info=True)
+    
+    # Set PYTHONPATH so the spawned gateway child can find tui_gateway.entry
+    env.setdefault("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{PROJECT_ROOT}:{env['PYTHONPATH']}".strip(":")
+    
+    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
+        "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
+    )
+    
+    env.setdefault("HERMES_PYTHON", sys.executable)
+    env.setdefault("HERMES_CWD", os.getcwd())
+    
+    if model:
+        env["HERMES_MODEL"] = model
+        env["HERMES_INFERENCE_MODEL"] = model
+    if provider:
+        env["HERMES_INFERENCE_PROVIDER"] = provider
+    if query:
+        env["HERMES_TUI_QUERY"] = query
+    
+    wt_info = None
+    if worktree:
+        try:
+            from cli import (
+                _cleanup_worktree,
+                _git_repo_root,
+                _prune_stale_worktrees,
+                _setup_worktree,
+            )
+            repo = _git_repo_root()
+            if repo:
+                _prune_stale_worktrees(repo)
+            wt_info = _setup_worktree()
+        except Exception as exc:
+            print(f"✗ Failed to create worktree: {exc}", file=sys.stderr)
+            wt_info = None
+        if not wt_info:
+            sys.exit(1)
+        env["HERMES_CWD"] = wt_info["path"]
+        env["TERMINAL_CWD"] = wt_info["path"]
+    
+    env.pop("HERMES_TUI_RESUME", None)
+    if resume_session_id:
+        env["HERMES_TUI_RESUME"] = resume_session_id
+    
+    code: Optional[int] = None
+    try:
+        try:
+            code = subprocess.call([str(rust_binary)], cwd=str(rust_tui_dir), env=env)
+        except KeyboardInterrupt:
+            code = 130
+    finally:
+        if wt_info:
+            try:
+                _cleanup_worktree(wt_info)
+            except Exception:
+                pass
+    
+    sys.exit(code if code is not None else 1)
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
@@ -2268,6 +2364,18 @@ def cmd_chat(args):
     _pin_kanban_board_env()
 
     if use_tui:
+        # --tui-rust: launch the Rust-based TUI binary
+        if _resolve_use_tui_rust(args):
+            _launch_tui_rust(
+                resume_session_id=getattr(args, "resume", None),
+                model=getattr(args, "model", None),
+                provider=getattr(args, "provider", None),
+                query=getattr(args, "query", None),
+                worktree=getattr(args, "worktree", False),
+            )
+            return  # _launch_tui_rust calls sys.exit internally
+        
+        # Default: launch the TypeScript/Ink TUI
         _launch_tui(
             getattr(args, "resume", None),
             tui_dev=getattr(args, "tui_dev", False),
@@ -2285,6 +2393,7 @@ def cmd_chat(args):
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
         )
+        return
 
     # Import and run the CLI
     from cli import main as cli_main
