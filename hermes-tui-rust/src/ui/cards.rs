@@ -111,6 +111,8 @@ pub struct CardComponent {
     content: String,
     /// Unique call ID for tool tracking
     call_id: String,
+    /// Raw tool name (without status icon decoration)
+    tool_name: String,
     /// Whether the card is expanded (shows full content)
     expanded: bool,
     /// Animation frame counter for spinner
@@ -128,6 +130,7 @@ impl CardComponent {
             title: title.into(),
             content: content.into(),
             call_id: String::new(),
+            tool_name: String::new(),
             expanded: false,
             spinner_frame: 0,
             colors,
@@ -168,6 +171,7 @@ impl CardComponent {
             title,
             content,
             call_id: data.call_id.clone(),
+            tool_name: data.tool_name.clone(),
             expanded: false,
             spinner_frame: 0,
             colors,
@@ -178,6 +182,7 @@ impl CardComponent {
     pub fn update_from_data(&mut self, data: &ToolCardData) {
         self.title = Self::tool_card_title(data);
         self.content = Self::tool_card_content(data, self.spinner_frame);
+        self.tool_name = data.tool_name.clone();
     }
 
     /// Toggle the expanded state of the card
@@ -193,6 +198,11 @@ impl CardComponent {
     /// Get the call_id
     pub fn call_id(&self) -> &str {
         &self.call_id
+    }
+
+    /// Get the raw tool name (without status icon decoration)
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
     }
 
     /// Check if the card is expanded
@@ -495,7 +505,7 @@ impl CardManager {
     ) -> bool {
         if let Some(card) = self.cards.iter_mut().find(|c| c.call_id() == call_id) {
             let data = ToolCardData {
-                tool_name: card.title().trim_matches(' ').to_string(), // approximate
+                tool_name: card.tool_name().to_string(), // use raw name, not decorated title
                 call_id: call_id.to_string(),
                 status,
                 duration_ms: None,

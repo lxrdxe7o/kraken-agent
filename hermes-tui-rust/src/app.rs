@@ -86,6 +86,10 @@ pub struct App {
     reconnect_attempts: u32,
     /// Animated activity panel height (smooth transition)
     actual_activity_height: f32,
+    /// Current model name from the gateway session info
+    current_model: Option<String>,
+    /// Current provider name from the gateway session info
+    current_provider: Option<String>,
 }
 
 impl App {
@@ -151,6 +155,8 @@ impl App {
             completion_popup: CompletionPopup::new(chat_colors_rgb),
             session_picker: SessionPicker::new(chat_colors_rgb),
             mouse_context: MouseContext::new(),
+            current_model: None,
+            current_provider: None,
         })
     }
 
@@ -1274,6 +1280,20 @@ impl App {
         // Set the new session as current
         self.sessions_mut().set_current_session(session_id);
         
+        // Extract model info from session
+        if let Some(ref info) = response.info {
+            if let Some(ref model) = info.model {
+                self.current_model = Some(model.clone());
+            }
+        }
+
+        // Extract provider info from the local session object
+        if let Some(session) = self.sessions().current_session() {
+            if let Some(ref provider) = session.provider {
+                self.current_provider = Some(provider.clone());
+            }
+        }
+
         // Clear message history for new session
         self.messages_mut().clear();
         self.chat_component_mut().clear_messages();
@@ -1294,6 +1314,20 @@ impl App {
         // Set the resumed session as current
         self.sessions_mut().set_current_session(session_id);
         
+        // Extract model info from session
+        if let Some(ref info) = response.info {
+            if let Some(ref model) = info.model {
+                self.current_model = Some(model.clone());
+            }
+        }
+        
+        // Extract provider info from the local session object
+        if let Some(session) = self.sessions().current_session() {
+            if let Some(ref provider_name) = session.provider {
+                self.current_provider = Some(provider_name.clone());
+            }
+        }
+
         // Clear existing messages
         self.messages_mut().clear();
         self.chat_component_mut().clear_messages();
@@ -1351,7 +1385,7 @@ impl App {
         // Update card_manager with progress output via call_id
         if let Some(card) = self.card_manager_mut().find_by_call_id_mut(&tool_progress.call_id) {
             let data = ToolCardData {
-                tool_name: card.title().to_string(),
+                tool_name: card.tool_name().to_string(),
                 call_id: tool_progress.call_id.clone(),
                 status: ToolStatus::Running,
                 duration_ms: None,
@@ -1380,7 +1414,7 @@ impl App {
         
         if let Some(card) = self.card_manager_mut().find_by_call_id_mut(&tool_complete.call_id) {
             let data = ToolCardData {
-                tool_name: card.title().to_string(),
+                tool_name: card.tool_name().to_string(),
                 call_id: tool_complete.call_id.clone(),
                 status,
                 duration_ms: tool_complete.duration_ms,
@@ -1587,12 +1621,23 @@ impl App {
     pub fn draw(&mut self) -> Result<()> {
         // Update toolbar state before drawing
         let connected = self.is_gateway_connected();
-        let model = self.config.theme.name.clone();
-        let session_id: Option<String> = self.sessions().current_session().map(|s| s.id.clone());
-        let session: Option<&str> = session_id.as_deref();
+        let model = self.current_model.as_deref().unwrap_or("unknown").to_string();
+        let provider = self.current_provider.clone();
+        let (session_name, msg_count) = {
+            let session_opt = self.sessions().current_session();
+            match session_opt {
+                Some(s) => {
+                    let name = s.name.clone().unwrap_or_else(|| "Unnamed".to_string());
+                    let count = s.message_count();
+                    (Some(name), count)
+                }
+                None => (None, 0),
+            }
+        };
 
-        self.toolbar.update_status(connected, Some(&model), session);
-
+        self.toolbar
+            .update_status(connected, Some(&model), provider.as_deref(), session_name.as_deref(), msg_count);
+    
         // Pre-compute layout values to avoid borrow conflicts inside the closure
         let hashline_block = self.message_history.last()
             .and_then(|m| if m.is_edit_tool_message() {
@@ -1952,6 +1997,8 @@ mod tests {
             session_picker: SessionPicker::new(chat_colors_rgb),
             actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
+            current_model: None,
+            current_provider: None,
         };
     }
     
@@ -1991,6 +2038,8 @@ mod tests {
             session_picker: SessionPicker::new(chat_colors_rgb),
             actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
+            current_model: None,
+            current_provider: None,
         };
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);

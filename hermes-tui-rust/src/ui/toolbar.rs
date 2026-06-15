@@ -148,7 +148,7 @@ impl Toolbar {
         }
     }
 
-    pub fn update_status(&mut self, connected: bool, model: Option<&str>, session: Option<&str>) {
+    pub fn update_status(&mut self, connected: bool, model: Option<&str>, provider: Option<&str>, session_name: Option<&str>, message_count: usize) {
         self.items.clear();
         if connected {
             self.add_text("●");
@@ -158,8 +158,14 @@ impl Toolbar {
         if let Some(model_name) = model {
             self.add_text(format!("Model: {}", model_name));
         }
-        if let Some(session_name) = session {
-            self.add_text(format!("Session: {}", session_name));
+        if let Some(provider_name) = provider {
+            self.add_text(format!("Provider: {}", provider_name));
+        }
+        if let Some(name) = session_name {
+            self.add_text(format!("Session: {}", name));
+        }
+        if message_count > 0 {
+            self.add_text(format!("Msgs: {}", message_count));
         }
         let mode_text = match self.input_mode {
             InputMode::Normal => "Normal",
@@ -339,13 +345,13 @@ mod tests {
     }
 
 #[test]
-    fn test_toolbar_update_status() {
-        let theme_colors = create_test_theme_colors();
-        let chat_colors = create_test_chat_colors();
-        let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        toolbar.update_status(true, Some("gpt-4"), Some("session-1"));
-        assert!(toolbar.items.len() >= 4);
-    }
+fn test_toolbar_update_status() {
+    let theme_colors = create_test_theme_colors();
+    let chat_colors = create_test_chat_colors();
+    let mut toolbar = Toolbar::new(theme_colors, chat_colors);
+    toolbar.update_status(true, Some("gpt-4"), Some("openai"), Some("Session 1"), 3);
+    assert!(toolbar.items.len() >= 6);
+}
 
     #[test]
     fn test_toolbar_item_new() {
