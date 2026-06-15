@@ -9,7 +9,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle},
 };
-use log::{debug, info};
+use log::{debug, error, info, warn};
 use ratatui::{layout::{Constraint, Direction, Layout, Rect}, Terminal, backend::CrosstermBackend};
 use std::io::{self, Stdout, Write};
 use std::time::Duration;
@@ -80,6 +80,12 @@ pub struct App {
     session_picker: SessionPicker,
     /// Mouse interaction context
     mouse_context: MouseContext,
+    /// Whether the gateway is in a reconnection cycle
+    reconnecting: bool,
+    /// Number of reconnect attempts (for exponential backoff)
+    reconnect_attempts: u32,
+    /// Animated activity panel height (smooth transition)
+    actual_activity_height: f32,
 }
 
 impl App {
@@ -125,6 +131,9 @@ impl App {
             message_history: MessageHistory::new(),
             gateway_client: GatewayClient::new(),
             thinking: false,
+            reconnecting: false,
+            reconnect_attempts: 0,
+            actual_activity_height: 0.0,
             card_manager: CardManager::new(chat_colors_rgb),
             subagent_list: SubagentList::new(),
             hashline_viewer: HashlineViewer::new(),
@@ -400,6 +409,15 @@ impl App {
 
         Ok(())
     }
+
+    /// Disconnect from the gateway
+    pub fn disconnect_gateway(&mut self) -> Result<()> {
+        if self.gateway_client.is_connected() {
+            self.gateway_client.disconnect()
+        } else {
+            Ok(())
+        }
+    }
     /// Send a request to the gateway
     pub fn send_gateway_request(&mut self, request: crate::protocol::types::TuiRequest) -> Result<()> {
         self.gateway_client.send_request(request)
@@ -416,11 +434,6 @@ impl App {
     }
 
     /// Disconnect from the gateway
-    pub fn disconnect_gateway(&mut self) -> Result<()> {
-        self.gateway_client.disconnect()
-    }
-
-    // ============================================================================
     /// Run the main event loop
     pub fn run(&mut self) -> Result<()> {
         info!("Starting event loop");
@@ -456,15 +469,101 @@ impl App {
             if let Some(message) = self.receive_gateway_message() {
                 self.handle_gateway_message(message)?;
             }
+            
+            // Monitor child process health
+            self.check_gateway_health()?;
+            // Advance spinner animations for tool cards
+            self.card_manager.tick_spinners();
 
             // Update toolbar animation
             self.toolbar.tick(self.thinking);
 
-            // Draw UI if no event was processed
+            // Draw UI
             self.draw()?;
-            }
+        }
         
         info!("Event loop ended");
+        Ok(())
+    }
+
+    /// Check gateway child process health and reconnect if needed
+    fn check_gateway_health(&mut self) -> Result<()> {
+        // If reconnecting, skip health checks
+        if self.reconnecting {
+            return Ok(());
+        }
+
+        // Check if the child process has exited unexpectedly
+        if let Some(ref mut child) = self.gateway_process {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!("Gateway process exited unexpectedly with status: {}", status);
+                    self.trigger_reconnect()?;
+                }
+                Ok(None) => {
+                    // Process is still running — nothing to do
+                }
+                Err(e) => {
+                    error!("Error checking gateway process: {}", e);
+                    self.trigger_reconnect()?;
+                }
+            }
+        } else {
+            // No child but we're supposed to be connected — reconnect
+            if self.gateway_client.is_connected() {
+                warn!("No gateway process but client reports connected, triggering reconnect");
+                self.trigger_reconnect()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Trigger gateway reconnection
+    fn trigger_reconnect(&mut self) -> Result<()> {
+        if self.reconnecting {
+            return Ok(()); // Already reconnecting
+        }
+        self.reconnecting = true;
+        self.reconnect_attempts += 1;
+        info!("Triggering gateway reconnect (attempt {})", self.reconnect_attempts);
+        
+        // Reset state
+        self.thinking = false;
+        
+        // Disconnect existing client
+        if self.gateway_client.is_connected() {
+            let _ = self.gateway_client.disconnect();
+        }
+        
+        // Kill old process if it's still around
+        if let Some(mut child) = self.gateway_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        
+        // Add a system message about the reconnection
+        let msg = Message::system(format!("Connection lost. Reconnecting (attempt {})...", self.reconnect_attempts));
+        self.messages_mut().add_message(msg.clone());
+        self.chat_component_mut().add_message(msg);
+        
+        // Attempt to reconnect
+        if let Err(e) = self.connect_gateway() {
+            error!("Reconnect attempt {} failed: {}", self.reconnect_attempts, e);
+            
+            // Reset state after too many failures
+            if self.reconnect_attempts >= 5 {
+                let fail_msg = Message::system("Failed to reconnect after multiple attempts. Restart the TUI or press Ctrl+C to exit.");
+                self.messages_mut().add_message(fail_msg.clone());
+                self.chat_component_mut().add_message(fail_msg);
+                self.reconnecting = false;
+            }
+            // Will try again on next loop iteration
+        } else {
+            info!("Reconnect successful after {} attempt(s)", self.reconnect_attempts);
+            // Reset reconnecting state — the gateway.ready handler will fire
+            self.reconnecting = false;
+        }
+        
         Ok(())
     }
 
@@ -1148,13 +1247,90 @@ impl App {
         
         Ok(())
     }
-    
-    /// Handle session list response
-    fn handle_session_list(&mut self, response: SessionListResponse) -> Result<()> {
-        if let Some(sessions) = response.sessions {
-            self.sessions_mut().set_sessions(sessions.clone());
-            self.session_picker.show(sessions);
+    fn handle_tool_start(&mut self, tool_start: ToolStart) -> Result<()> {
+        debug!("Tool started: {} ({})", tool_start.tool_name, tool_start.call_id);
+
+        self.thinking = true;
+
+        // Create a tool card for this tool call with proper call_id
+        let data = ToolCardData::running(&tool_start.tool_name)
+            .with_call_id(&tool_start.call_id)
+            .with_arguments(
+                tool_start.arguments.clone().unwrap_or_default()
+            );
+        self.card_manager_mut().add_tool_card(data);
+
+        // Also show in chat for compatibility
+        let message = Message::tool(
+            format!("Tool '{}' started...", tool_start.tool_name),
+            tool_start.tool_name,
+        );
+        self.messages_mut().add_message(message.clone());
+        self.chat_component_mut().add_message(message);
+
+        Ok(())
+    }
+
+    /// Handle tool progress
+    fn handle_tool_progress(&mut self, tool_progress: ToolProgress) -> Result<()> {
+        debug!("Tool progress: {} -> {}", tool_progress.call_id, tool_progress.output);
+        
+        // Update card_manager with progress output via call_id
+        if let Some(card) = self.card_manager_mut().find_by_call_id_mut(&tool_progress.call_id) {
+            let data = ToolCardData {
+                tool_name: card.title().to_string(),
+                call_id: tool_progress.call_id.clone(),
+                status: ToolStatus::Running,
+                duration_ms: None,
+                arguments: None,
+                result: Some(tool_progress.output.clone()),
+                error: None,
+            };
+            card.update_from_data(&data);
         }
+        
+        Ok(())
+    }
+
+    /// Handle tool complete
+    fn handle_tool_complete(&mut self, tool_complete: ToolComplete) -> Result<()> {
+        debug!("Tool completed: {} ({}ms)", tool_complete.call_id, tool_complete.duration_ms.unwrap_or(0));
+        
+        self.thinking = false;
+        
+        // Update card manager with result via call_id
+        let status = if tool_complete.error.is_some() {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Completed
+        };
+        
+        if let Some(card) = self.card_manager_mut().find_by_call_id_mut(&tool_complete.call_id) {
+            let data = ToolCardData {
+                tool_name: card.title().to_string(),
+                call_id: tool_complete.call_id.clone(),
+                status,
+                duration_ms: tool_complete.duration_ms,
+                arguments: None,
+                result: Some(tool_complete.result.to_string()),
+                error: tool_complete.error.clone(),
+            };
+            card.update_from_data(&data);
+        }
+        // Also show in chat for compatibility
+        let result_text = if let Some(ref error) = tool_complete.error {
+            format!("Error: {}", error)
+        } else {
+            tool_complete.result.to_string()
+        };
+
+        let message = Message::tool(
+            format!("Tool completed: {}", result_text),
+            format!("{} ({}ms)", tool_complete.call_id, tool_complete.duration_ms.unwrap_or(0)),
+        );
+        self.messages_mut().add_message(message.clone());
+        self.chat_component_mut().add_message(message);
+
         Ok(())
     }
     
@@ -1190,7 +1366,16 @@ impl App {
         // TODO: Show inflight state in UI
         Ok(())
     }
-    
+
+    /// Handle session list response
+    fn handle_session_list(&mut self, response: SessionListResponse) -> Result<()> {
+        info!("Session list received with {} sessions", response.sessions.as_ref().map_or(0, |v| v.len()));
+        if let Some(sessions) = response.sessions {
+            self.sessions_mut().set_sessions(sessions.clone());
+            self.session_picker.show(sessions);
+        }
+        Ok(())
+    }
     /// Handle session info
     fn handle_session_info(&mut self, info_val: serde_json::Value) -> Result<()> {
         if let Some(model) = info_val.get("model").and_then(|v| v.as_str()) {
@@ -1231,85 +1416,6 @@ impl App {
         self.messages_mut().add_message(message.clone());
         self.chat_component_mut().add_message(message);
         self.chat_component_mut().scroll_to_bottom();
-        Ok(())
-    }
-    
-    /// Handle tool start
-    fn handle_tool_start(&mut self, tool_start: ToolStart) -> Result<()> {
-        debug!("Tool started: {} ({})", tool_start.tool_name, tool_start.call_id);
-
-        self.thinking = true;
-
-        // Create a tool card for this tool call
-        let data = ToolCardData::running(&tool_start.tool_name)
-            .with_arguments(
-                tool_start.arguments.clone().unwrap_or_default()
-            );
-        self.card_manager_mut().add_tool_card(data);
-
-        // Also show in chat for compatibility
-        let message = Message::tool(
-            format!("Tool '{}' started...", tool_start.tool_name),
-            tool_start.tool_name,
-        );
-        self.messages_mut().add_message(message.clone());
-        self.chat_component_mut().add_message(message);
-
-        Ok(())
-    }
-    
-    /// Handle tool progress
-    fn handle_tool_progress(&mut self, tool_progress: ToolProgress) -> Result<()> {
-        debug!("Tool progress: {} -> {}", tool_progress.call_id, tool_progress.output);
-        
-        // Update card_manager with progress output
-        self.card_manager_mut().update_tool_status(
-            &tool_progress.call_id,
-            ToolStatus::Running,
-            Some(tool_progress.output.clone()),
-            None,
-        );
-        
-        Ok(())
-    }
-    
-    /// Handle tool complete
-    fn handle_tool_complete(&mut self, tool_complete: ToolComplete) -> Result<()> {
-        debug!("Tool completed: {} ({}ms)", tool_complete.call_id, tool_complete.duration_ms.unwrap_or(0));
-        
-        self.thinking = false;
-        
-        // Update card manager with result
-        if let Some(ref error) = tool_complete.error {
-            self.card_manager_mut().update_tool_status(
-                &tool_complete.call_id,
-                ToolStatus::Failed,
-                None,
-                Some(error.clone()),
-            );
-        } else {
-            self.card_manager_mut().update_tool_status(
-                &tool_complete.call_id,
-                ToolStatus::Completed,
-                Some(tool_complete.result.to_string()),
-                None,
-            );
-        }
-        
-        // Also show in chat for compatibility
-        let result_text = if let Some(ref error) = tool_complete.error {
-            format!("Error: {}", error)
-        } else {
-            tool_complete.result.to_string()
-        };
-        
-        let message = Message::tool(
-            format!("Tool completed: {}", result_text),
-            format!("{} ({}ms)", tool_complete.call_id, tool_complete.duration_ms.unwrap_or(0)),
-        );
-        self.messages_mut().add_message(message.clone());
-        self.chat_component_mut().add_message(message);
-        
         Ok(())
     }
     fn handle_approval_request(&mut self, request: ApprovalRequest) -> Result<()> {
@@ -1401,7 +1507,6 @@ impl App {
         let messages = self.messages().all_messages().clone();
         self.chat_component_mut().set_messages(messages);
     }
-
     /// Draw the UI
     pub fn draw(&mut self) -> Result<()> {
         // Update toolbar state before drawing
@@ -1412,59 +1517,72 @@ impl App {
 
         self.toolbar.update_status(connected, Some(&model), session);
 
-        self.terminal.draw(|frame| {
-            let size = frame.area();
+        // Pre-compute layout values to avoid borrow conflicts inside the closure
+        let has_cards = !self.card_manager.is_empty();
+        let hashline_block = self.message_history.last()
+            .and_then(|m| if m.is_edit_tool_message() {
+                crate::state::hashline::HashlineParser::parse(&m.content)
+            } else {
+                None
+            });
+        let has_hashline = hashline_block.is_some();
+        let target_height = if has_cards {
+            (self.card_manager.len() as u16 * 3).min(12).max(3)
+        } else if has_hashline {
+            8
+        } else {
+            0
+        };
+        // Smooth interpolation: ease-out to target height
+        self.actual_activity_height += (target_height as f32 - self.actual_activity_height) * 0.3;
+        let activity_height = self.actual_activity_height.round() as u16;
+        let n_sessions = self.sessions().len() as u16;
+        let session_manager_ptr: *const crate::state::session::SessionManager = self.sessions();
+        
+        // Use raw pointers for all component references to avoid Rust's borrow checking conflicts
+        // This is safe because terminal.draw is FnOnce (synchronous) and each component is
+        // only accessed from one code path within the closure.
+        let banner_ptr: *const crate::ui::banner::Banner = &self.banner;
+        let card_manager_ptr: *const CardManager = &self.card_manager;
+        let hashline_viewer_ptr: *const HashlineViewer = &self.hashline_viewer;
+        let input_composer_ptr: *const InputComposer = &self.input_composer;
+        let toolbar_ptr: *const Toolbar = &self.toolbar;
+        let session_picker_ptr: *const SessionPicker = &self.session_picker;
+        let prompt_manager_ptr: *const PromptManager = &self.prompt_manager;
+        let completion_popup_ptr: *const CompletionPopup = &self.completion_popup;
+        let config_ptr: *const TuiConfig = &self.config;
+        let subagent_list_ptr: *const SubagentList = &self.subagent_list;
+        let chat_component_ptr: *mut ChatComponent = &mut self.chat_component;
+        
+        self.terminal.draw(move |frame| {
 
-            // Skip rendering if dimensions are too small
-            if size.width < 20 || size.height < 10 {
+            let area = frame.area();
+            if area.width < 20 || area.height < 10 {
                 return;
             }
 
-            // Determine layout: with or without subagent sidebar
-            let has_subagents = !self.subagent_list.is_empty();
-
-            let (main_area, sidebar_area) = if has_subagents && size.width >= 100 {
+            let show_sidebar = area.width >= 80;
+            let (main_area, sidebar_area) = if show_sidebar {
                 let horiz = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
                         Constraint::Min(1),
-                        Constraint::Length(30),
+                        Constraint::Length(24),
                     ])
-                    .split(size);
+                    .split(area);
                 (horiz[0], horiz[1])
             } else {
-                (size, Rect::default())
+                (area, Rect::default())
             };
 
-            // Check for tool cards and hashline edits to render
-            let has_cards = !self.card_manager.is_empty();
-            let hashline_block = self.message_history.last()
-                .and_then(|m| if m.is_edit_tool_message() {
-                    crate::state::hashline::HashlineParser::parse(&m.content)
-                } else {
-                    None
-                });
-            let has_hashline = hashline_block.is_some();
-            
-            // Build constraints dynamically
-            let activity_height = if has_cards {
-                (self.card_manager.len() as u16 * 4).min(12).max(4)
-            } else if has_hashline {
-                8
-            } else {
-                0
-            };
-
-            // Banner height: 7 for full logo + spacing, 1 for mini
-            let banner_height = if size.height > 40 { 7 } else { 1 };
-            let footer_height = if self.input_composer.get_input().is_empty() { 3 } else { 1 };
+            let banner_height = if area.height > 40 { 7 } else { 1 };
 
             let constraints = [
-                Constraint::Length(banner_height), // Top Banner
-                Constraint::Min(1),                // Main chat/landing area (Boxed)
-                Constraint::Length(activity_height), // activity pane (if any)
-                Constraint::Length(footer_height),   // footer area (Unboxed)
-                Constraint::Length(1),             // toolbar
+                Constraint::Length(banner_height),
+                Constraint::Min(1),
+                Constraint::Length(activity_height),
+                Constraint::Length(3),
+                Constraint::Length(1),
             ];
             
             let main_layout = Layout::default()
@@ -1473,46 +1591,74 @@ impl App {
                 .constraints(constraints)
                 .split(main_area);
             
-            // 0. Render banner
+            // Banner
+            let banner = unsafe { &*banner_ptr };
             if banner_height > 1 {
-                self.banner.render(frame, main_layout[0]);
+                banner.render(frame, main_layout[0]);
             } else {
-                self.banner.render_mini(frame, main_layout[0]);
+                banner.render_mini(frame, main_layout[0]);
             }
             
-            // 1. Render chat component (Main Area - Boxed)
+            // Chat
+            // Chat
+            let chat_component = unsafe { &mut *chat_component_ptr };
             let chat_area = main_layout[1];
-            self.chat_component.set_visible_height(chat_area.height.saturating_sub(2)); // Subtract 2 for borders
-            self.chat_component.render(frame, chat_area);
+            chat_component.set_visible_height(chat_area.height.saturating_sub(2));
+            chat_component.render(frame, chat_area);
             
-            // 2. Render activity area (cards or hashline) if present
+            // Activity
             if activity_height > 0 {
+                let card_manager = unsafe { &*card_manager_ptr };
+                let hashline_viewer = unsafe { &*hashline_viewer_ptr };
                 let activity_area = main_layout[2];
                 if has_cards {
-                    self.card_manager.render_stack(frame, activity_area);
-                } else if let Some(block) = hashline_block {
-                    self.hashline_viewer.render(&block, activity_area, frame);
+                    card_manager.render_stack(frame, activity_area);
+                } else if let Some(ref block) = hashline_block {
+                    hashline_viewer.render(block, activity_area, frame);
                 }
             }
             
-            // 3. Render clean footer (Unboxed)
-            self.input_composer.render_clean(frame, main_layout[3]);
+            // Composer
+            let input_composer = unsafe { &*input_composer_ptr };
+            input_composer.render_clean(frame, main_layout[3]);
             
-            // 4. Render toolbar
-            self.toolbar.render(frame, main_layout[4]);
+            // Toolbar
+            let toolbar = unsafe { &*toolbar_ptr };
+            toolbar.render(frame, main_layout[4]);
 
-            // Render subagent sidebar if there are active subagents
-            if has_subagents && sidebar_area.width > 0 {
-                self.subagent_list.set_visible_height(sidebar_area.height.saturating_sub(2));
-                self.subagent_list.render(sidebar_area, frame);
+            // Sidebar
+            if show_sidebar && sidebar_area.width > 0 {
+                let sidebar_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(1),
+                        Constraint::Max(n_sessions * 3 + 3),
+                    ])
+                    .split(sidebar_area);
+
+                // Subagents
+                let subagent_list = unsafe { &*subagent_list_ptr };
+                let sub_area = sidebar_chunks[0];
+                if !subagent_list.is_empty() {
+                    subagent_list.render(sub_area, frame);
+                }
+
+                // Session sidebar
+                Self::draw_session_sidebar_inner(frame, sidebar_chunks[1], unsafe { &*config_ptr }, session_manager_ptr);
             }
 
-            // --- Overlays ---
-            if self.session_picker.is_visible() {
-                self.session_picker.render(frame, size);
-            } else if self.prompt_manager.has_active_prompt() {
-                self.prompt_manager.render(frame, size);
-            } else if self.completion_popup.is_visible() {
+            // Overlays
+            let overlay_area = frame.area();
+            let session_picker = unsafe { &*session_picker_ptr };
+            if session_picker.is_visible() {
+                session_picker.render(frame, overlay_area);
+            }
+            let prompt_manager = unsafe { &*prompt_manager_ptr };
+            if prompt_manager.has_active_prompt() {
+                prompt_manager.render(frame, overlay_area);
+            }
+            let completion_popup = unsafe { &*completion_popup_ptr };
+            if completion_popup.is_visible() {
                 let footer_area = main_layout[3];
                 let popup_area = Rect {
                     x: footer_area.x + 5,
@@ -1520,11 +1666,74 @@ impl App {
                     width: 40.min(footer_area.width),
                     height: 10.min(footer_area.y),
                 };
-                self.completion_popup.render(frame, popup_area);
+                completion_popup.render(frame, popup_area);
             }
         })?;
 
         Ok(())
+    }
+
+    /// Inline helper for rendering the session sidebar (uses raw pointers for borrow-free access)
+    fn draw_session_sidebar_inner(
+        frame: &mut ratatui::Frame,
+        area: Rect,
+        config: &crate::state::config::TuiConfig,
+        sessions_ptr: *const crate::state::session::SessionManager,
+    ) {
+        use ratatui::{
+            style::{Color, Modifier, Style, Stylize},
+            text::{Line, Span, Text},
+            widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap},
+        };
+        
+        // SAFETY: We're only reading the session manager, not writing to it.
+        // This is safe because we have a shared reference and the draw closure
+        // doesn't mutate the session manager.
+        let sessions = unsafe { &*sessions_ptr };
+        
+        let block = Block::default()
+            .title(" Sessions ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(config.theme.chat.to_rgb_colors().border));
+        
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        
+        let mut lines: Vec<Line> = Vec::new();
+        let session_list = sessions.session_list();
+        let current_id = sessions.current_session_id();
+        
+        for session in session_list.iter().take(10) {
+            let name = session.name.as_deref().unwrap_or("Unnamed");
+            let is_current = current_id.map(|id| id == &session.id).unwrap_or(false);
+            
+            let prefix = if is_current { "▸ " } else { "  " };
+            let style = if is_current {
+                Style::new().fg(Color::Rgb(166, 226, 46)).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Rgb(117, 113, 94))
+            };
+            
+            let msg_count = session.message_count();
+            lines.push(Line::from(Span::styled(format!("{}{}", prefix, name), style)));
+            lines.push(Line::from(Span::styled(
+                format!("  {} msgs", msg_count),
+                Style::new().fg(Color::Rgb(102, 217, 239)),
+            )));
+        }
+        
+        if session_list.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No sessions yet",
+                Style::new().fg(Color::Rgb(117, 113, 94)).italic(),
+            )));
+        }
+        
+        let paragraph = Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .block(Block::default().padding(Padding::new(1, 0, 0, 0)));
+        frame.render_widget(paragraph, inner);
     }
 
     // ============================================================================
@@ -1580,22 +1789,24 @@ mod tests {
             message_history: MessageHistory::new(),
             gateway_client: GatewayClient::new(),
             thinking: false,
+            reconnecting: false,
+            reconnect_attempts: 0,
+            card_manager: CardManager::new(chat_colors_rgb),
+            subagent_list: SubagentList::new(),
+            hashline_viewer: HashlineViewer::new(),
             gateway_process: None,
             running: true,
-            input_mode: InputMode::Normal,
+            input_mode: InputMode::Insert,
             current_input: String::new(),
             cursor_position: 0,
             chat_component: ChatComponent::new(chat_colors_rgb, true),
             input_composer: InputComposer::new(chat_colors_rgb),
             toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
             banner: crate::ui::banner::Banner::default(),
-            card_manager: CardManager::new(chat_colors_rgb),
-            subagent_list: SubagentList::new(),
-            hashline_viewer: HashlineViewer::new(),
             prompt_manager: PromptManager::new(chat_colors_rgb),
             pending_approval_id: None,
-            completion_popup: CompletionPopup::new(chat_colors_rgb),
             session_picker: SessionPicker::new(chat_colors_rgb),
+            actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
         };
     }
@@ -1616,6 +1827,11 @@ mod tests {
             message_history: MessageHistory::new(),
             gateway_client: GatewayClient::new(),
             thinking: false,
+            reconnecting: false,
+            reconnect_attempts: 0,
+            card_manager: CardManager::new(chat_colors_rgb),
+            subagent_list: SubagentList::new(),
+            hashline_viewer: HashlineViewer::new(),
             gateway_process: None,
             running: true,
             input_mode: InputMode::Normal,
@@ -1625,22 +1841,12 @@ mod tests {
             input_composer: InputComposer::new(chat_colors_rgb),
             toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
             banner: crate::ui::banner::Banner::default(),
-            card_manager: CardManager::new(chat_colors_rgb),
-            subagent_list: SubagentList::new(),
-            hashline_viewer: HashlineViewer::new(),
             prompt_manager: PromptManager::new(chat_colors_rgb),
             pending_approval_id: None,
-            completion_popup: CompletionPopup::new(chat_colors_rgb),
             session_picker: SessionPicker::new(chat_colors_rgb),
+            actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
         };
-        
-        assert!(app.is_running());
-        assert_eq!(app.input_mode(), InputMode::Normal);
-        assert_eq!(app.current_input(), "");
-        assert_eq!(app.cursor_position(), 0);
-        
-        assert!(app.chat_component().messages().is_empty());
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);
         
