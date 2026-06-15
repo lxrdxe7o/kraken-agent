@@ -410,29 +410,50 @@ impl InputComposer {
 
         // Set cursor position with multi-line support
         if self.active {
-            let prompt_len = self.prompt.chars().count();
+            let prompt_len = self.prompt.chars().count() as u16;
+            let inner_width = inner_area.width;
+            
+            // Find which logical line the cursor is in
             let input_before = &self.input[..self.cursor_pos.min(self.input.len())];
-            let num_newlines = input_before.matches('\n').count() as u16;
-            // Find position within the current logical line
+            let current_logical_line_idx = input_before.matches('\n').count();
+            let input_lines: Vec<&str> = self.input.lines().collect();
+            
+            let mut cursor_y = inner_area.y;
+            
+            // Add visual lines for all logical lines before the current one
+            for i in 0..current_logical_line_idx {
+                let line_text = input_lines.get(i).copied().unwrap_or("");
+                let line_len = line_text.chars().count() as u16;
+                let first_line_width = inner_width.saturating_sub(prompt_len);
+                
+                if first_line_width > 0 && line_len > first_line_width {
+                    let remaining = line_len - first_line_width;
+                    cursor_y += 1 + (remaining + inner_width - 1).checked_div(inner_width).unwrap_or(0);
+                } else {
+                    cursor_y += 1;
+                }
+            }
+            
+            // Now calculate position within the current logical line
             let line_start = input_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
             let col_in_line = (self.cursor_pos - line_start) as u16;
-
-            // Approximate wrapped lines: first line has prompt offset, others full width
-            let effective_width = if num_newlines == 0 {
-                inner_area.width.saturating_sub(prompt_len as u16)
+            let first_line_width = inner_width.saturating_sub(prompt_len);
+            
+            let (wrapped_extra, final_col) = if first_line_width > 0 && col_in_line >= first_line_width {
+                let remaining = col_in_line - first_line_width;
+                if inner_width > 0 {
+                    (1 + remaining / inner_width, remaining % inner_width)
+                } else {
+                    (1, 0)
+                }
             } else {
-                inner_area.width
+                (0, prompt_len + col_in_line)
             };
-            let wrapped_extra = if effective_width > 0 {
-                col_in_line / effective_width
-            } else {
-                0
-            };
+            
+            cursor_y += wrapped_extra;
+            let cursor_x = inner_area.x + final_col;
 
-            let cursor_y = inner_area.y + num_newlines + wrapped_extra;
-            let cursor_x = inner_area.x + prompt_len as u16 + (col_in_line % effective_width);
-
-            if cursor_x < inner_area.x + inner_area.width {
+            if cursor_x < inner_area.x + inner_area.width && cursor_y < inner_area.y + inner_area.height {
                 frame.set_cursor_position(Position::new(cursor_x, cursor_y));
             }
         }
