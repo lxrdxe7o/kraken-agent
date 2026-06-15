@@ -26,14 +26,17 @@ use crate::state::{config::ChatColorsRgb, messages::Message};
 pub struct ChatComponent {
     /// Messages to display
     messages: Vec<Message>,
-    /// Current scroll position (in message height units)
     scroll_position: u16,
+    /// Visual scroll position with float interpolation (for smooth physics)
+    scroll_offset_f32: f32,
     /// Visible height of the chat area in lines
     visible_height: u16,
     /// Chat colors from configuration
     colors: ChatColorsRgb,
     /// Whether to show timestamps
     show_timestamps: bool,
+    /// Content width used for word-wrap calculations (set each render)
+    inner_width: u16,
 }
 
 impl ChatComponent {
@@ -42,9 +45,11 @@ impl ChatComponent {
         Self {
             messages: Vec::new(),
             scroll_position: 0,
+            scroll_offset_f32: 0.0,
             visible_height: 0,
             colors,
             show_timestamps,
+            inner_width: 80,
         }
     }
 
@@ -80,6 +85,36 @@ impl ChatComponent {
         self.visible_height = height;
     }
 
+    /// Set the content width for word-wrap calculations
+    pub fn set_inner_width(&mut self, width: u16) {
+        self.inner_width = width;
+    }
+    /// Calculate the height of a message in lines, accounting for word-wrap
+    pub fn message_height(&self, message: &Message) -> u16 {
+        let content_width = self.inner_width.saturating_sub(2).max(10) as usize; // 2 for padding
+        let mut total_wrapped_lines = 0u16;
+
+        for line in message.content.lines() {
+            if line.is_empty() {
+                total_wrapped_lines += 1;
+            } else if content_width > 0 {
+                // Calculate how many wrapped lines this line produces
+                let line_len = line.len(); // approximate for ASCII
+                let wrapped = ((line_len as f64) / (content_width as f64)).ceil() as u16;
+                total_wrapped_lines += wrapped.max(1);
+            } else {
+                total_wrapped_lines += 1;
+            }
+        }
+
+        if total_wrapped_lines == 0 && message.is_streaming() {
+            total_wrapped_lines = 1;
+        }
+
+        // Add 2 lines for bubble borders (top/bottom) + 1 line for spacing
+        total_wrapped_lines + 3
+    }
+
     /// Scroll down by the given amount (in lines)
     pub fn scroll_down(&mut self, amount: u16) {
         let max = self.max_scroll_position();
@@ -109,18 +144,6 @@ impl ChatComponent {
             .map(|m| self.message_height(m))
             .sum();
         total_height.saturating_sub(self.visible_height)
-    }
-
-    /// Calculate the height of a message in lines
-    pub fn message_height(&self, message: &Message) -> u16 {
-        // Count lines in content
-        let mut content_lines = message.content.lines().count() as u16;
-        if content_lines == 0 && message.is_streaming() {
-            content_lines = 1;
-        }
-
-        // Add 2 lines for bubble borders (top/bottom) + 1 line for spacing
-        content_lines + 3
     }
 
     /// Get the style for a message role
@@ -203,7 +226,7 @@ impl ChatComponent {
     }
 
     /// Render the chat component
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if self.messages.is_empty() {
             self.render_empty(frame, area);
             return;
@@ -222,15 +245,20 @@ impl ChatComponent {
             return;
         }
 
+        // Update inner_width for word-wrap calculations in message_height
+        self.inner_width = inner_area.width;
+
         // Calculate scroll state using actual inner area height
         let total_height: u16 = self
             .messages
             .iter()
             .map(|m| self.message_height(m))
             .sum();
-        
         let max_scroll = total_height.saturating_sub(inner_area.height);
-        let current_scroll = self.scroll_position.min(max_scroll);
+        // Smooth scroll interpolation using ease-out decay (~6 frames to settle)
+        let target_scroll = self.scroll_position.min(max_scroll);
+        self.scroll_offset_f32 += (target_scroll as f32 - self.scroll_offset_f32) * 0.3;
+        let current_scroll = self.scroll_offset_f32.round() as u16;
 
         // Render the main block
         frame.render_widget(block, area);
@@ -265,8 +293,6 @@ impl ChatComponent {
             let render_height = msg_height.saturating_sub(start_offset).min(available_height);
             
             if render_height > 0 {
-                // For simplicity in this complex TUI, we render the full message but clip it with a sub-area
-                // Ratatui handles clipping automatically
                 let msg_area = Rect {
                     x: inner_area.x,
                     y: inner_area.y + y_offset,
@@ -324,17 +350,12 @@ impl ChatComponent {
                 role_style.add_modifier(Modifier::BOLD),
             ));
 
-        // Add tool emoji to title if it's a tool message
+        // Determine tool emoji from the message context/name field (RPC metadata) instead of content parsing
         if message.role == MessageRole::Tool {
-            let emoji = if message.content.contains("run_shell_command") {
-                "🐚"
-            } else if message.content.contains("read_file") || message.content.contains("write_file") {
-                "📜"
-            } else if message.content.contains("grep_search") || message.content.contains("glob") {
-                "🔍"
-            } else {
-                "🛠️"
-            };
+            let tool_name = message.context.as_deref()
+                .or(message.name.as_deref())
+                .unwrap_or("");
+            let emoji = get_tool_emoji(tool_name);
             block = block.title_bottom(Line::from(vec![Span::raw(" "), Span::raw(emoji), Span::raw(" ")]));
         }
 
@@ -352,27 +373,91 @@ impl ChatComponent {
             );
         }
 
-        let mut lines = Vec::new();
-        for line in message.content.lines() {
-            lines.push(Line::from(Span::raw(line)));
-        }
-
-        // If streaming, add a cursor
-        if message.is_streaming() {
-            if lines.is_empty() {
-                lines.push(Line::from(Span::styled("▊", Style::new().fg(Color::Yellow))));
-            } else if let Some(last_line) = lines.last_mut() {
-                last_line
-                    .spans
-                    .push(Span::styled("▊", Style::new().fg(Color::Yellow)));
-            }
-        }
+        // Build message lines with syntax highlighting for code blocks
+        let lines = self.render_message_content(message, area.width);
 
         let paragraph = Paragraph::new(Text::from(lines))
             .block(block)
             .wrap(ratatui::widgets::Wrap { trim: false });
 
         frame.render_widget(paragraph, area);
+    }
+
+    /// Render message content with optional syntax highlighting
+    fn render_message_content<'a>(&self, message: &'a Message, _area_width: u16) -> Vec<Line<'a>> {
+        let mut result = Vec::new();
+        let mut in_code_block = false;
+        let mut code_lang = String::new();
+        let mut code_lines: Vec<String> = Vec::new();
+
+        for line in message.content.lines() {
+            if crate::utils::syntax::is_code_block_start(line) {
+                if in_code_block {
+                    // Add highlighted code
+                    result.extend(self.highlight_code(&code_lines, &code_lang));
+                    code_lines.clear();
+                    code_lang.clear();
+                }
+                let trimmed = line.trim();
+                // Extract language if present (e.g., ```rust)
+                code_lang = trimmed.trim_start_matches("```").trim().to_string();
+                in_code_block = true;
+                continue;
+            }
+
+            if in_code_block {
+                if crate::utils::syntax::is_code_block_end(line) {
+                    in_code_block = false;
+                    result.extend(self.highlight_code(&code_lines, &code_lang));
+                    code_lines.clear();
+                    code_lang.clear();
+                } else {
+                    code_lines.push(line.to_string());
+                }
+                continue;
+            }
+
+            // Normal text line
+            result.push(Line::from(Span::raw(line)));
+        }
+
+        // Handle unclosed code block at end of content
+        if in_code_block && !code_lines.is_empty() {
+            result.extend(self.highlight_code(&code_lines, &code_lang));
+        }
+
+        // If streaming, add a cursor
+        if message.is_streaming() {
+            if result.is_empty() {
+                result.push(Line::from(Span::styled("▊", Style::new().fg(Color::Yellow))));
+            } else if let Some(last_line) = result.last_mut() {
+                last_line
+                    .spans
+                    .push(Span::styled("▊", Style::new().fg(Color::Yellow)));
+            }
+        }
+
+        result
+    }
+
+    /// Highlight a code block using the syntax highlighter
+    fn highlight_code<'a>(&self, code_lines: &[String], lang: &str) -> Vec<Line<'a>> {
+        use crate::utils::syntax::SyntaxHighlighter;
+        
+        if code_lines.is_empty() {
+            return vec![Line::from(Span::raw("(empty code block)"))];
+        }
+
+        let code = code_lines.join("\n");
+        let highlighter = SyntaxHighlighter::default();
+        let highlighted = highlighter.highlight(&code, Some(lang));
+
+        if highlighted.is_empty() {
+            // Fallback: plain text
+            code_lines.iter().map(|l| Line::from(Span::raw(l.clone()))).collect()
+        } else {
+            highlighted
+        }
     }
 
     /// Render empty state (Landing Page)
@@ -499,6 +584,33 @@ impl ChatComponent {
     }
 }
 
+/// Determine the appropriate emoji for a tool name
+fn get_tool_emoji(tool_name: &str) -> &'static str {
+    if tool_name.is_empty() {
+        return "🛠️";
+    }
+    if tool_name.contains("run_shell") || tool_name.contains("bash") || tool_name.contains("terminal") {
+        "🐚"
+    } else if tool_name.contains("read_file") || tool_name.contains("write_file") || tool_name.contains("file") || tool_name.contains("patch") {
+        "📜"
+    } else if tool_name.contains("search") || tool_name.contains("grep") || tool_name.contains("glob") || tool_name.contains("find") {
+        "🔍"
+    } else if tool_name.contains("web_search") || tool_name.contains("browser") || tool_name.contains("http") {
+        "🌐"
+    } else if tool_name.contains("delegate") || tool_name.contains("task") {
+        "🤖"
+    } else if tool_name.contains("memory") || tool_name.contains("remember") {
+        "🧠"
+    } else if tool_name.contains("execute_code") || tool_name.contains("code") {
+        "💻"
+    } else if tool_name.contains("approve") || tool_name.contains("deny") {
+        "✅"
+    } else if tool_name.contains("error") || tool_name.contains("fail") {
+        "❌"
+    } else {
+        "🛠️"
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
