@@ -291,6 +291,18 @@ impl InputComposer {
         self.saved_input.clear();
     }
 
+
+    /// Calculate the required height in terminal rows for the current input.
+    /// Returns at least 1, and at most a configurable max height (default 8).
+    pub fn required_height(&self, max_height: u16) -> u16 {
+        if self.input.is_empty() {
+            // Welcome message + input line + some padding
+            return 3u16.min(max_height);
+        }
+        let line_count = self.input.lines().count().max(1) as u16;
+        // Add 1 for the prompt + anything beyond max gets clamped
+        (line_count + 1).min(max_height).max(1)
+    }
     /// Render the composer
     /// Render the composer without a surrounding block (for the clean Kraken footer)
     pub fn render_clean(&self, frame: &mut Frame, area: Rect) {
@@ -396,12 +408,29 @@ impl InputComposer {
 
         frame.render_widget(paragraph, inner_area);
 
-        // Set cursor position
+        // Set cursor position with multi-line support
         if self.active {
-            // Basic cursor positioning for now (needs improvement for multi-line)
             let prompt_len = self.prompt.chars().count();
-            let cursor_x = inner_area.x + (prompt_len + self.cursor_pos) as u16;
-            let cursor_y = inner_area.y;
+            let input_before = &self.input[..self.cursor_pos.min(self.input.len())];
+            let num_newlines = input_before.matches('\n').count() as u16;
+            // Find position within the current logical line
+            let line_start = input_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let col_in_line = (self.cursor_pos - line_start) as u16;
+
+            // Approximate wrapped lines: first line has prompt offset, others full width
+            let effective_width = if num_newlines == 0 {
+                inner_area.width.saturating_sub(prompt_len as u16)
+            } else {
+                inner_area.width
+            };
+            let wrapped_extra = if effective_width > 0 {
+                col_in_line / effective_width
+            } else {
+                0
+            };
+
+            let cursor_y = inner_area.y + num_newlines + wrapped_extra;
+            let cursor_x = inner_area.x + prompt_len as u16 + (col_in_line % effective_width);
 
             if cursor_x < inner_area.x + inner_area.width {
                 frame.set_cursor_position(Position::new(cursor_x, cursor_y));
