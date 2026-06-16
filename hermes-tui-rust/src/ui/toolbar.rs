@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::state::config::{ChatColorsRgb, FocusPane, InputMode, ThemeColorsRgb};
+use crate::state::config::{ChatColorsRgb, InputMode, ThemeColorsRgb};
 
 /// Status bar item for displaying information
 #[derive(Debug, Clone)]
@@ -22,9 +22,7 @@ pub struct ToolbarItem {
 
 impl ToolbarItem {
     pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-        }
+        Self { text: text.into() }
     }
 }
 
@@ -46,8 +44,6 @@ pub struct Toolbar {
     chat_colors: ChatColorsRgb,
     /// Current input mode
     input_mode: InputMode,
-    /// Current focus pane
-    focus_pane: FocusPane,
     /// Whether the gateway is thinking
     is_thinking: bool,
     /// Current spinner index
@@ -58,6 +54,7 @@ pub struct Toolbar {
 
 impl Toolbar {
     /// Create a new toolbar with the given colors
+    #[must_use]
     pub fn new(theme_colors: ThemeColorsRgb, chat_colors: ChatColorsRgb) -> Self {
         Self {
             items: Vec::new(),
@@ -67,11 +64,11 @@ impl Toolbar {
             is_thinking: false,
             spinner_idx: 0,
             verb_idx: 0,
-            focus_pane: FocusPane::default(),
         }
     }
 
     /// Create a new toolbar with all defaults
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(
             ThemeColorsRgb {
@@ -106,11 +103,6 @@ impl Toolbar {
         self.input_mode = mode;
     }
 
-    /// Set the current focus pane
-    pub fn set_focus_pane(&mut self, pane: FocusPane) {
-        self.focus_pane = pane;
-    }
-
     /// Set the theme colors
     pub fn set_theme_colors(&mut self, colors: ThemeColorsRgb) {
         self.theme_colors = colors;
@@ -140,8 +132,14 @@ impl Toolbar {
     }
 
     /// Get the input mode
+    #[must_use]
     pub fn input_mode(&self) -> InputMode {
         self.input_mode
+    }
+
+    /// Set the currently focused pane (used for animated borders)
+    pub fn set_focus_pane(&mut self, _pane: crate::state::config::FocusPane) {
+        // Focus pane state is tracked in App; the toolbar doesn't need it
     }
 
     /// Update thinking status and increment spinner
@@ -156,7 +154,14 @@ impl Toolbar {
         }
     }
 
-    pub fn update_status(&mut self, connected: bool, model: Option<&str>, provider: Option<&str>, session_name: Option<&str>, message_count: usize) {
+    pub fn update_status(
+        &mut self,
+        connected: bool,
+        model: Option<&str>,
+        provider: Option<&str>,
+        session_name: Option<&str>,
+        message_count: usize,
+    ) {
         self.items.clear();
         if connected {
             self.add_text("●");
@@ -164,32 +169,23 @@ impl Toolbar {
             self.add_text("○");
         }
         if let Some(model_name) = model {
-            self.add_text(format!("Model: {}", model_name));
+            self.add_text(format!("Model: {model_name}"));
         }
         if let Some(provider_name) = provider {
-            self.add_text(format!("Provider: {}", provider_name));
+            self.add_text(format!("Provider: {provider_name}"));
         }
         if let Some(name) = session_name {
-            self.add_text(format!("Session: {}", name));
+            self.add_text(format!("Session: {name}"));
         }
         if message_count > 0 {
-            self.add_text(format!("Msgs: {}", message_count));
+            self.add_text(format!("Msgs: {message_count}"));
         }
         let mode_text = match self.input_mode {
             InputMode::Normal => "Normal",
             InputMode::Insert => "Insert",
             InputMode::Command => "Command",
         };
-
-        // Focus pane indicator
-        let focus_label = match self.focus_pane {
-            FocusPane::Chat => "[1] Chat",
-            FocusPane::Sidebar => "[2] Sidebar",
-            FocusPane::Composer => "[3] Composer",
-            FocusPane::Toolbar => "[4] Toolbar",
-        };
-        self.add_text(focus_label);
-        self.add_text(format!("Mode: {}", mode_text));
+        self.add_text(format!("Mode: {mode_text}"));
     }
 
     /// Render the toolbar as a clean status line matching the TUI aesthetic
@@ -216,17 +212,29 @@ impl Toolbar {
         if self.is_thinking {
             let faces = ["(≡)", "(≌)", "(‿)", "(◈)", "(Ψ)", "(🦑)"];
             let verbs = [
-                "stirring the abyss", "unfurling tentacles", "charting deep currents",
-                "inking the void", "tangling with the unknown", "sounding the trench",
-                "coiling for strike", "reading pressure ridges", "glowing in the dark",
-                "shedding a bioluminescent tear", "befriending a gulper eel",
-                "counting jellyfish", "spiraling downward", "mapping the sea floor",
-                "teasing the leviathan", "whispering to barnacles",
+                "stirring the abyss",
+                "unfurling tentacles",
+                "charting deep currents",
+                "inking the void",
+                "tangling with the unknown",
+                "sounding the trench",
+                "coiling for strike",
+                "reading pressure ridges",
+                "glowing in the dark",
+                "shedding a bioluminescent tear",
+                "befriending a gulper eel",
+                "counting jellyfish",
+                "spiraling downward",
+                "mapping the sea floor",
+                "teasing the leviathan",
+                "whispering to barnacles",
             ];
             let face = faces[(self.spinner_idx / 10) % faces.len()];
             let verb = verbs[self.verb_idx % verbs.len()];
-            spans.push(Span::styled(format!(" {} {}... ", face, verb),
-                Style::default().fg(accent_green).bold().italic()));
+            spans.push(Span::styled(
+                format!(" {face} {verb}... "),
+                Style::default().fg(accent_green).bold().italic(),
+            ));
         }
 
         // 3. Info items (model, session, mode)
@@ -243,7 +251,10 @@ impl Toolbar {
             if let Some((label, value)) = text.split_once(": ") {
                 spans.push(Span::styled(label, Style::default().fg(dim)));
                 spans.push(Span::styled(":", Style::default().fg(dim)));
-                spans.push(Span::styled(format!("{}", value), Style::default().fg(main_fg)));
+                spans.push(Span::styled(
+                    value.to_string(),
+                    Style::default().fg(main_fg),
+                ));
             } else {
                 spans.push(Span::styled(text, Style::default().fg(main_fg)));
             }
@@ -252,7 +263,7 @@ impl Toolbar {
 
         // 4. Right side: clock
         let clock = chrono::Local::now().format("%H:%M").to_string();
-        let clock_span = Span::styled(format!(" {} ", clock), Style::default().fg(dim));
+        let clock_span = Span::styled(format!(" {clock} "), Style::default().fg(dim));
 
         let left_line = Line::from(spans);
         let left_width = left_line.width();
@@ -269,7 +280,6 @@ impl Toolbar {
         frame.render_widget(Paragraph::new(Line::from(final_spans)), area);
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -313,13 +323,13 @@ mod tests {
         assert!(toolbar.items.is_empty());
     }
 
-#[test]
+    #[test]
     fn test_toolbar_with_defaults() {
         let toolbar = Toolbar::with_defaults();
         assert!(toolbar.items.is_empty());
     }
 
-#[test]
+    #[test]
     fn test_toolbar_add_item() {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
@@ -327,7 +337,7 @@ mod tests {
         assert!(toolbar.items.is_empty());
     }
 
-#[test]
+    #[test]
     fn test_toolbar_add_text() {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
@@ -351,24 +361,24 @@ mod tests {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
         let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
+
         assert_eq!(toolbar.input_mode(), InputMode::Normal);
-        
+
         toolbar.set_input_mode(InputMode::Insert);
         assert_eq!(toolbar.input_mode(), InputMode::Insert);
-        
+
         toolbar.set_input_mode(InputMode::Command);
         assert_eq!(toolbar.input_mode(), InputMode::Command);
     }
 
-#[test]
-fn test_toolbar_update_status() {
-    let theme_colors = create_test_theme_colors();
-    let chat_colors = create_test_chat_colors();
-    let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-    toolbar.update_status(true, Some("gpt-4"), Some("openai"), Some("Session 1"), 3);
-    assert!(toolbar.items.len() >= 6);
-}
+    #[test]
+    fn test_toolbar_update_status() {
+        let theme_colors = create_test_theme_colors();
+        let chat_colors = create_test_chat_colors();
+        let mut toolbar = Toolbar::new(theme_colors, chat_colors);
+        toolbar.update_status(true, Some("gpt-4"), Some("openai"), Some("Session 1"), 3);
+        assert!(toolbar.items.len() >= 6);
+    }
 
     #[test]
     fn test_toolbar_item_new() {
@@ -376,7 +386,7 @@ fn test_toolbar_update_status() {
         assert_eq!(item.text, "Test");
     }
 
-#[test]
+    #[test]
     fn test_toolbar_item_with_defaults() {
         let item = ToolbarItem::new("Defaults");
         assert_eq!(item.text, "Defaults");

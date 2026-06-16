@@ -856,11 +856,13 @@ impl App {
             return Ok(());
         }
 
-        // Check for Enter key in Insert mode - submit prompt
-        if self.input_mode == InputMode::Insert && code == KeyCode::Enter && !modifiers.contains(KeyModifiers::SHIFT) {
+        // Check for Enter key in Insert or Command mode - submit prompt
+        if (self.input_mode == InputMode::Insert || self.input_mode == InputMode::Command)
+            && code == KeyCode::Enter
+            && !modifiers.contains(KeyModifiers::SHIFT)
+        {
             if !self.input_composer.get_input().is_empty() {
                 self.submit_prompt()?;
-                self.current_input = self.input_composer.get_input().to_string();
                 return Ok(());
             }
         }
@@ -913,6 +915,12 @@ impl App {
             if handled {
                 self.current_input = self.input_composer.get_input().to_string();
                 self.input_mode = self.input_composer.input_mode();
+            }
+
+            // Request slash completions while typing in Command mode
+            if self.input_mode == InputMode::Command && handled {
+                let text = self.input_composer.get_input().to_string();
+                let _ = self.send_gateway_request(TuiRequest::CompleteSlash { text });
             }
         }
 
@@ -1271,6 +1279,11 @@ impl App {
             GatewayMessage::Error(error) => {
                 self.handle_gateway_error(error)?;
             }
+
+            // Unhandled message types
+            _ => {
+                debug!("Unhandled gateway message type");
+            }
         }
         
         Ok(())
@@ -1611,16 +1624,16 @@ impl App {
     fn handle_slash_completion(&mut self, completion: CompletionResponse) -> Result<()> {
         debug!("Slash completion: {:?}", completion.items);
         if let Some(items) = completion.items {
-            self.completion_popup.show(items);
+            self.completion_popup.show(items, None);
         }
         Ok(())
     }
-    
+
     /// Handle path completion
     fn handle_path_completion(&mut self, completion: CompletionResponse) -> Result<()> {
         debug!("Path completion: {:?}", completion.items);
         if let Some(items) = completion.items {
-            self.completion_popup.show(items);
+            self.completion_popup.show(items, None);
         }
         Ok(())
     }
@@ -1813,7 +1826,7 @@ impl App {
             let chat_inner = chat_block.inner(chat_area);
             frame.render_widget(chat_block, chat_area);
             chat_component.set_visible_height(chat_inner.height.saturating_sub(2));
-            chat_component.render(frame, chat_inner, unsafe { &*card_manager_ptr }, unsafe { &*subagent_list_ptr });
+            chat_component.render(frame, chat_inner, unsafe { &*card_manager_ptr }, unsafe { &*subagent_list_ptr }, connected);
             
             // Activity (hashline only - cards are drawn inline in chat)
             if activity_height > 0 {
