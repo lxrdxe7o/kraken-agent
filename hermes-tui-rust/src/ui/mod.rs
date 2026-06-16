@@ -2,15 +2,21 @@
 //!
 //! This module contains all the UI components for the TUI.
 
-pub mod chat;
-pub mod composer;
-pub mod toolbar;
+pub mod banner;
 pub mod cards;
-pub mod prompts;
-pub mod hashline;
-pub mod subagent;
+pub mod chat;
 pub mod completions;
+pub mod composer;
+pub mod dashboard;
+pub mod gif;
+pub mod hashline;
+pub mod ide;
+pub mod kanban;
+pub mod model_picker;
+pub mod prompts;
 pub mod session_picker;
+pub mod subagent;
+pub mod toolbar;
 
 // Re-export when modules are implemented
 // pub use chat::*;
@@ -18,3 +24,4 @@ pub mod session_picker;
 // pub use toolbar::*;
 // pub use cards::*;
 // pub use prompts::*;
+pub use model_picker::ModelPicker;

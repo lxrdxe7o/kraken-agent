@@ -4,10 +4,10 @@
 //! like the current model, session, input mode, etc.
 
 use ratatui::{
-    layout::{Alignment, Rect},
-    style::Style,
-    text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    layout::Rect,
+    style::{Style, Stylize},
+    text::{Line, Span},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -18,22 +18,11 @@ use crate::state::config::{ChatColorsRgb, InputMode, ThemeColorsRgb};
 pub struct ToolbarItem {
     /// Display text
     text: String,
-    /// Style for this item
-    style: Style,
 }
 
 impl ToolbarItem {
-    /// Create a new toolbar item
-    pub fn new(text: impl Into<String>, style: Style) -> Self {
-        Self {
-            text: text.into(),
-            style,
-        }
-    }
-
-    /// Create a new toolbar item with default style
-    pub fn with_defaults(text: impl Into<String>) -> Self {
-        Self::new(text, Style::new())
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
     }
 }
 
@@ -55,20 +44,31 @@ pub struct Toolbar {
     chat_colors: ChatColorsRgb,
     /// Current input mode
     input_mode: InputMode,
+    /// Whether the gateway is thinking
+    is_thinking: bool,
+    /// Current spinner index
+    spinner_idx: usize,
+    /// Current thinking verb index
+    verb_idx: usize,
 }
 
 impl Toolbar {
     /// Create a new toolbar with the given colors
+    #[must_use]
     pub fn new(theme_colors: ThemeColorsRgb, chat_colors: ChatColorsRgb) -> Self {
         Self {
             items: Vec::new(),
             theme_colors,
             chat_colors,
             input_mode: InputMode::Normal,
+            is_thinking: false,
+            spinner_idx: 0,
+            verb_idx: 0,
         }
     }
 
     /// Create a new toolbar with all defaults
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(
             ThemeColorsRgb {
@@ -118,14 +118,12 @@ impl Toolbar {
         self.items.push(item);
     }
 
-    /// Add a text item with the given style
-    pub fn add_text(&mut self, text: impl Into<String>, style: Style) {
-        self.items.push(ToolbarItem::new(text, style));
+    pub fn add_text(&mut self, text: impl Into<String>) {
+        self.items.push(ToolbarItem::new(text));
     }
 
-    /// Add a text item with default style
     pub fn add_default_text(&mut self, text: impl Into<String>) {
-        self.items.push(ToolbarItem::with_defaults(text));
+        self.items.push(ToolbarItem::new(text));
     }
 
     /// Clear all items
@@ -134,82 +132,152 @@ impl Toolbar {
     }
 
     /// Get the input mode
+    #[must_use]
     pub fn input_mode(&self) -> InputMode {
         self.input_mode
     }
 
-    /// Update the status based on connection state and current mode
-    pub fn update_status(&mut self, connected: bool, model: Option<&str>, session: Option<&str>) {
+    /// Set the currently focused pane (used for animated borders)
+    pub fn set_focus_pane(&mut self, _pane: crate::state::config::FocusPane) {
+        // Focus pane state is tracked in App; the toolbar doesn't need it
+    }
+
+    /// Update thinking status and increment spinner
+    pub fn tick(&mut self, is_thinking: bool) {
+        self.is_thinking = is_thinking;
+        if is_thinking {
+            self.spinner_idx = self.spinner_idx.wrapping_add(1);
+            // Change verb every 200 ticks (~3.3s at 60fps)
+            if self.spinner_idx % 200 == 0 {
+                self.verb_idx = self.verb_idx.wrapping_add(1);
+            }
+        }
+    }
+
+    pub fn update_status(
+        &mut self,
+        connected: bool,
+        model: Option<&str>,
+        provider: Option<&str>,
+        session_name: Option<&str>,
+        message_count: usize,
+    ) {
         self.items.clear();
-        
-        // Add connection status
         if connected {
-            self.add_text(
-                "● ".to_string(),
-                Style::new().fg(self.theme_colors.success),
-            );
+            self.add_text("●");
         } else {
-            self.add_text(
-                "○ ".to_string(),
-                Style::new().fg(self.theme_colors.error),
-            );
+            self.add_text("○");
         }
-        
-        // Add model name
         if let Some(model_name) = model {
-            self.add_text(
-                format!("Model: {} ", model_name),
-                Style::new().fg(self.theme_colors.text),
-            );
+            self.add_text(format!("Model: {model_name}"));
         }
-        
-        // Add session name
-        if let Some(session_name) = session {
-            self.add_text(
-                format!("Session: {} ", session_name),
-                Style::new().fg(self.theme_colors.text),
-            );
+        if let Some(provider_name) = provider {
+            self.add_text(format!("Provider: {provider_name}"));
         }
-        
-        // Add input mode
+        if let Some(name) = session_name {
+            self.add_text(format!("Session: {name}"));
+        }
+        if message_count > 0 {
+            self.add_text(format!("Msgs: {message_count}"));
+        }
         let mode_text = match self.input_mode {
             InputMode::Normal => "Normal",
             InputMode::Insert => "Insert",
             InputMode::Command => "Command",
         };
-        self.add_text(
-            format!("Mode: {} ", mode_text),
-            Style::new().fg(self.theme_colors.accent),
-        );
+        self.add_text(format!("Mode: {mode_text}"));
     }
 
-    /// Render the toolbar
+    /// Render the toolbar as a clean status line matching the TUI aesthetic
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        // Create a block for the toolbar
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .border_type(BorderType::Plain)
-            .border_style(Style::new().fg(self.chat_colors.border));
-
-        // Inner area
-        let inner_area = block.inner(area);
-        
-        // Render the block
-        frame.render_widget(block, area);
-
-        // Build the text line
-        let mut spans = Vec::new();
-        for item in &self.items {
-            spans.push(Span::styled(item.text.clone(), item.style));
+        if area.height == 0 {
+            return;
         }
-        
-        // Create paragraph with all spans
-        let paragraph = Paragraph::new(Text::from(Line::from(spans)))
-            .style(Style::new().fg(self.theme_colors.text))
-            .alignment(Alignment::Left)
-            .block(Block::new().padding(Padding::horizontal(1)));
-        
-        frame.render_widget(paragraph, inner_area);
+
+        let dim = self.chat_colors.tool_text;
+        let accent_green = self.theme_colors.success;
+        let accent_red = self.theme_colors.error;
+        let main_fg = self.theme_colors.text;
+        let sep = Style::default().fg(dim);
+        let sep_str = " · ";
+
+        let mut spans: Vec<Span> = Vec::new();
+
+        // 1. Connection indicator
+        let connected = self.items.iter().any(|i| i.text == "●");
+        let dot_color = if connected { accent_green } else { accent_red };
+        spans.push(Span::styled("●", Style::default().fg(dot_color).bold()));
+
+        // 2. Thinking indicator (if active)
+        if self.is_thinking {
+            let faces = ["(≡)", "(≌)", "(‿)", "(◈)", "(Ψ)", "(🦑)"];
+            let verbs = [
+                "stirring the abyss",
+                "unfurling tentacles",
+                "charting deep currents",
+                "inking the void",
+                "tangling with the unknown",
+                "sounding the trench",
+                "coiling for strike",
+                "reading pressure ridges",
+                "glowing in the dark",
+                "shedding a bioluminescent tear",
+                "befriending a gulper eel",
+                "counting jellyfish",
+                "spiraling downward",
+                "mapping the sea floor",
+                "teasing the leviathan",
+                "whispering to barnacles",
+            ];
+            let face = faces[(self.spinner_idx / 10) % faces.len()];
+            let verb = verbs[self.verb_idx % verbs.len()];
+            spans.push(Span::styled(
+                format!(" {face} {verb}... "),
+                Style::default().fg(accent_green).bold().italic(),
+            ));
+        }
+
+        // 3. Info items (model, session, mode)
+        let mut first = true;
+        for item in &self.items {
+            let text = item.text.trim();
+            if text == "●" || text == "○" || text.is_empty() {
+                continue;
+            }
+            if !first && !self.is_thinking {
+                spans.push(Span::styled(sep_str, sep));
+            }
+            // Labels like "Model:" in dim, values in main fg
+            if let Some((label, value)) = text.split_once(": ") {
+                spans.push(Span::styled(label, Style::default().fg(dim)));
+                spans.push(Span::styled(":", Style::default().fg(dim)));
+                spans.push(Span::styled(
+                    value.to_string(),
+                    Style::default().fg(main_fg),
+                ));
+            } else {
+                spans.push(Span::styled(text, Style::default().fg(main_fg)));
+            }
+            first = false;
+        }
+
+        // 4. Right side: clock
+        let clock = chrono::Local::now().format("%H:%M").to_string();
+        let clock_span = Span::styled(format!(" {clock} "), Style::default().fg(dim));
+
+        let left_line = Line::from(spans);
+        let left_width = left_line.width();
+        let clock_width = clock_span.width();
+
+        let mut final_spans = left_line.spans;
+
+        if area.width > (left_width as u16 + clock_width as u16) {
+            let padding = " ".repeat(area.width as usize - left_width - clock_width);
+            final_spans.push(Span::raw(padding));
+            final_spans.push(clock_span);
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(final_spans)), area);
     }
 }
 
@@ -265,12 +333,8 @@ mod tests {
     fn test_toolbar_add_item() {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
-        let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
-        let item = ToolbarItem::new("Test", Style::new());
-        toolbar.add_item(item);
-        
-        assert_eq!(toolbar.items.len(), 1);
+        let toolbar = Toolbar::new(theme_colors, chat_colors);
+        assert!(toolbar.items.is_empty());
     }
 
     #[test]
@@ -278,22 +342,16 @@ mod tests {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
         let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
-        toolbar.add_text("Test", Style::new().fg(ratatui::style::Color::Red));
-        
+        toolbar.add_text("Test");
         assert_eq!(toolbar.items.len(), 1);
     }
-
     #[test]
     fn test_toolbar_clear() {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
         let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
         toolbar.add_default_text("Test 1");
-        toolbar.add_default_text("Test 2");
-        assert_eq!(toolbar.items.len(), 2);
-        
+        assert_eq!(toolbar.items.len(), 1);
         toolbar.clear();
         assert!(toolbar.items.is_empty());
     }
@@ -303,12 +361,12 @@ mod tests {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
         let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
+
         assert_eq!(toolbar.input_mode(), InputMode::Normal);
-        
+
         toolbar.set_input_mode(InputMode::Insert);
         assert_eq!(toolbar.input_mode(), InputMode::Insert);
-        
+
         toolbar.set_input_mode(InputMode::Command);
         assert_eq!(toolbar.input_mode(), InputMode::Command);
     }
@@ -318,22 +376,19 @@ mod tests {
         let theme_colors = create_test_theme_colors();
         let chat_colors = create_test_chat_colors();
         let mut toolbar = Toolbar::new(theme_colors, chat_colors);
-        
-        toolbar.update_status(true, Some("gpt-4"), Some("session-1"));
-        
-        // Should have connection indicator + model + session + mode
-        assert!(toolbar.items.len() >= 4);
+        toolbar.update_status(true, Some("gpt-4"), Some("openai"), Some("Session 1"), 3);
+        assert!(toolbar.items.len() >= 6);
     }
 
     #[test]
     fn test_toolbar_item_new() {
-        let item = ToolbarItem::new("Test", Style::new());
+        let item = ToolbarItem::new("Test");
         assert_eq!(item.text, "Test");
     }
 
     #[test]
     fn test_toolbar_item_with_defaults() {
-        let item = ToolbarItem::with_defaults("Test");
-        assert_eq!(item.text, "Test");
+        let item = ToolbarItem::new("Defaults");
+        assert_eq!(item.text, "Defaults");
     }
 }

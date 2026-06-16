@@ -79,13 +79,13 @@ pub struct SessionInfo {
 /// Gateway ready response - first message from gateway
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayReadyResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Vec<SessionListItem>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<ModelOptionProvider>>,
 }
 
@@ -188,54 +188,99 @@ pub struct SessionListResponse {
 /// Message delta (streaming)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDelta {
-    pub session_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<MessageRole>,
-    pub delta: String,
+    pub session_id: Option<String>,
+    pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub done: Option<bool>,
+    pub rendered: Option<String>,
 }
-
 /// Message complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageComplete {
-    pub session_key: String,
-    pub role: MessageRole,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub text: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<String>,
 }
-
-// ============================================================================
 // Tool Types
 // ============================================================================
 
 /// Tool start notification
+/// Tool start notification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolStart {
-    pub session_key: String,
-    pub tool_name: String,
-    pub call_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<HashMap<String, serde_json::Value>>,
+    pub session_id: Option<String>,
+    /// Tool name — gateway sends as "name"
+    #[serde(rename = "name")]
+    pub tool_name: String,
+    /// Call ID — gateway sends as "`tool_id`"
+    #[serde(rename = "tool_id")]
+    pub call_id: String,
+    /// Tool args as JSON string — gateway sends as "`args_text`"
+    #[serde(rename = "args_text", default)]
+    pub arguments: Option<String>,
 }
 
 /// Tool progress update
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolProgress {
-    pub session_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(alias = "tool_name", alias = "name")]
     pub call_id: String,
+    #[serde(alias = "preview", alias = "text")]
     pub output: String,
 }
 
 /// Tool complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolComplete {
-    pub session_key: String,
-    pub call_id: String,
-    pub result: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Call ID — gateway sends as "`tool_id`"
+    #[serde(rename = "tool_id")]
+    pub call_id: String,
+    /// Tool result — gateway sends as a JSON object
+    #[serde(default)]
+    pub result: serde_json::Value,
+    /// Duration in seconds from gateway — stored as ms
+    #[serde(rename = "duration_s", default, deserialize_with = "secs_to_ms")]
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+// ============================================================================
+// Subagent Types
+// ============================================================================
+
+/// Subagent event from the gateway (start, thinking, progress, tool, complete)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentEvent {
+    pub goal: String,
+    pub task_count: usize,
+    pub task_index: usize,
+    pub subagent_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub child_session_id: Option<String>,
+    pub depth: Option<usize>,
+    pub model: Option<String>,
+    pub tool_count: Option<usize>,
+    pub toolsets: Option<Vec<String>>,
+    pub tool_name: Option<String>,
+    pub text: Option<String>,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+    pub duration_seconds: Option<f64>,
 }
 
 // ============================================================================
@@ -245,7 +290,8 @@ pub struct ToolComplete {
 /// Approval request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
-    pub session_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub request_id: String,
     pub tool_name: String,
     pub arguments: HashMap<String, serde_json::Value>,
@@ -285,6 +331,7 @@ pub struct CompletionResponse {
 /// Slash exec request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashExecRequest {
+    pub session_id: String,
     pub command: String,
 }
 
@@ -325,9 +372,12 @@ pub struct ConfigGetResponse {
 /// Prompt submit request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptSubmitRequest {
-    pub message: String,
+    pub session_id: String,
+    pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncate_before_user_ordinal: Option<usize>,
 }
 
 /// Prompt submit response
@@ -335,6 +385,8 @@ pub struct PromptSubmitRequest {
 pub struct PromptSubmitResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 // ============================================================================
@@ -361,10 +413,10 @@ pub struct GatewayStderr {
 // Main Gateway Message Enum
 // ============================================================================
 
-/// All possible messages from the gateway
+/// All possible messages from the gateway (event payloads)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum GatewayMessage {
+#[serde(tag = "type", content = "payload")]
+pub enum GatewayMessageData {
     // Gateway lifecycle
     #[serde(rename = "gateway.ready")]
     Ready(GatewayReadyResponse),
@@ -385,11 +437,51 @@ pub enum GatewayMessage {
     #[serde(rename = "session.inflight")]
     SessionInflight(SessionInflightResponse),
 
-    // Messages
+    #[serde(rename = "session.info")]
+    SessionInfo(serde_json::Value),
+
+    #[serde(rename = "status.update")]
+    StatusUpdate(serde_json::Value),
+
+    #[serde(rename = "reasoning.available")]
+    ReasoningAvailable(serde_json::Value),
+
+    #[serde(rename = "reasoning.delta")]
+    ReasoningDelta(serde_json::Value),
+
+    #[serde(rename = "message.start")]
+    MessageStart(serde_json::Value),
+
     #[serde(rename = "message.delta")]
     MessageDelta(MessageDelta),
+
+    // Subagents
+    #[serde(rename = "subagent.start")]
+    SubagentStart(SubagentEvent),
+    #[serde(rename = "subagent.thinking")]
+    SubagentThinking(SubagentEvent),
+    #[serde(rename = "subagent.progress")]
+    SubagentProgress(SubagentEvent),
+    #[serde(rename = "subagent.tool")]
+    SubagentTool(SubagentEvent),
+    #[serde(rename = "subagent.complete")]
+    SubagentComplete(SubagentEvent),
     #[serde(rename = "message.complete")]
     MessageComplete(MessageComplete),
+
+    #[serde(rename = "thinking.delta")]
+    ThinkingDelta(serde_json::Value),
+
+    #[serde(rename = "notice.upsert")]
+    NoticeUpsert(serde_json::Value),
+
+    #[serde(rename = "notice.clear")]
+    NoticeClear(serde_json::Value),
+
+    #[serde(rename = "notification.show")]
+    NotificationShow(serde_json::Value),
+    #[serde(rename = "notification.clear")]
+    NotificationClear(serde_json::Value),
 
     // Tools
     #[serde(rename = "tool.start")]
@@ -398,6 +490,8 @@ pub enum GatewayMessage {
     ToolProgress(ToolProgress),
     #[serde(rename = "tool.complete")]
     ToolComplete(ToolComplete),
+    #[serde(rename = "tool.generating")]
+    ToolGenerating(serde_json::Value),
 
     // Approvals
     #[serde(rename = "approval.request")]
@@ -421,10 +515,226 @@ pub enum GatewayMessage {
     #[serde(rename = "prompt.submit")]
     PromptSubmit(PromptSubmitResponse),
 
+    // Preview
+    #[serde(rename = "preview.restart.progress")]
+    PreviewRestartProgress(serde_json::Value),
+    #[serde(rename = "preview.restart.complete")]
+    PreviewRestartComplete(serde_json::Value),
+
+    // Voice
+    #[serde(rename = "voice.transcript")]
+    VoiceTranscript(serde_json::Value),
+    #[serde(rename = "voice.status")]
+    VoiceStatus(serde_json::Value),
+
+    // Browser
+    #[serde(rename = "browser.progress")]
+    BrowserProgress(serde_json::Value),
+
+    // Background
+    #[serde(rename = "background.complete")]
+    BackgroundComplete(serde_json::Value),
+
+    // Review
+    #[serde(rename = "review.summary")]
+    ReviewSummary(serde_json::Value),
+
+    // Skin
+    #[serde(rename = "skin.changed")]
+    SkinChanged(serde_json::Value),
+
+    // Clarify / Sudo / Secret Requests
+    #[serde(rename = "clarify.request")]
+    ClarifyRequest(ClarifyRequest),
+    #[serde(rename = "sudo.request")]
+    SudoRequest(SudoRequest),
+    #[serde(rename = "secret.request")]
+    SecretRequest(SecretRequest),
+
+    // Respond Responses
+    #[serde(rename = "session.close")]
+    SessionClose(SessionCloseResponse),
+    #[serde(rename = "approval.respond")]
+    ApprovalRespond(ApprovalRespondResponse),
+    #[serde(rename = "config.set")]
+    ConfigSet(ConfigSetResponse),
+    #[serde(rename = "terminal.resize")]
+    TerminalResize(TerminalResizeResponse),
+    #[serde(rename = "clarify.respond")]
+    ClarifyRespond(ClarifyRespondResponse),
+    #[serde(rename = "sudo.respond")]
+    SudoRespond(SudoRespondResponse),
+    #[serde(rename = "secret.respond")]
+    SecretRespond(SecretRespondResponse),
+    #[serde(rename = "session.interrupt")]
+    SessionInterrupt(SessionInterruptResponse),
+    #[serde(rename = "session.most_recent")]
+    SessionMostRecent(SessionMostRecentResponse),
+    #[serde(rename = "session.delete")]
+    SessionDelete(SessionDeleteResponse),
+    #[serde(rename = "session.cwd.set")]
+    SessionCwdSet(SessionCwdSetResponse),
+    #[serde(rename = "model.options")]
+    ModelOptions(ModelOptionsResponse),
+
     // Error
     #[serde(rename = "error")]
     Error(GatewayError),
 }
+
+/// Clarify request event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarifyRequest {
+    pub request_id: String,
+    pub question: String,
+    pub choices: Option<Vec<String>>,
+}
+
+/// Sudo request event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SudoRequest {
+    pub request_id: String,
+}
+
+/// Secret request event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretRequest {
+    pub request_id: String,
+    pub env_var: String,
+    pub prompt: String,
+}
+
+/// Clarify response params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarifyResponse {
+    pub request_id: String,
+    pub answer: String,
+}
+
+/// Sudo response params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SudoResponse {
+    pub request_id: String,
+    pub password: String,
+}
+
+/// Secret response params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretResponse {
+    pub request_id: String,
+    pub value: String,
+}
+
+/// Session close response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionCloseResponse {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub success: Option<bool>,
+}
+
+/// Approval respond response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApprovalRespondResponse {
+    #[serde(default)]
+    pub success: Option<bool>,
+}
+
+/// Config set response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigSetResponse {
+    #[serde(default)]
+    pub success: Option<bool>,
+}
+
+/// Terminal resize response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TerminalResizeResponse {
+    #[serde(default)]
+    pub success: Option<bool>,
+}
+
+/// Clarify respond response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClarifyRespondResponse {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+}
+
+/// Sudo respond response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SudoRespondResponse {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+}
+
+/// Secret respond response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecretRespondResponse {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+}
+
+/// Session interrupt response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionInterruptResponse {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+}
+
+/// Session most recent response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionMostRecentResponse {
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// Session delete response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionDeleteResponse {
+    #[serde(default)]
+    pub deleted: Option<String>,
+}
+
+/// Session cwd set response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionCwdSetResponse {
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub success: Option<bool>,
+}
+
+/// Model options response
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelOptionsResponse {
+    #[serde(default)]
+    pub providers: Option<Vec<ModelOptionProvider>>,
+}
+
+/// Complete slash/path responses
+pub type SlashCompletionResponse = CompletionResponse;
+pub type PathCompletionResponse = CompletionResponse;
+
+/// A wrapper for events from the gateway
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayEvent {
+    pub session_id: Option<String>,
+    #[serde(flatten)]
+    pub data: GatewayMessageData,
+}
+
+/// Compatibility alias to avoid breaking too much code at once
+pub type GatewayMessage = GatewayMessageData;
 
 /// Session activate response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,10 +789,34 @@ pub enum TuiRequest {
     ApprovalRespond(ApprovalResponse),
 
     #[serde(rename = "complete.slash")]
-    CompleteSlash { query: String },
+    CompleteSlash { text: String },
 
     #[serde(rename = "complete.path")]
-    CompletePath { path: String },
+    CompletePath { word: String },
+
+    #[serde(rename = "clarify.respond")]
+    ClarifyRespond(ClarifyResponse),
+
+    #[serde(rename = "sudo.respond")]
+    SudoRespond(SudoResponse),
+
+    #[serde(rename = "secret.respond")]
+    SecretRespond(SecretResponse),
+
+    #[serde(rename = "session.interrupt")]
+    SessionInterrupt { session_id: String },
+
+    #[serde(rename = "session.most_recent")]
+    SessionMostRecent,
+
+    #[serde(rename = "session.delete")]
+    SessionDelete { session_id: String },
+
+    #[serde(rename = "session.cwd.set")]
+    SessionCwdSet { session_id: String, cwd: String },
+
+    #[serde(rename = "model.options")]
+    ModelOptions,
 
     #[serde(rename = "slash.exec")]
     SlashExec(SlashExecRequest),
@@ -509,10 +843,10 @@ mod tests {
             skin: None,
             models: None,
         });
-        
+
         let serialized = serde_json::to_string(&msg).unwrap();
         let deserialized: GatewayMessage = serde_json::from_str(&serialized).unwrap();
-        
+
         match deserialized {
             GatewayMessage::Ready(_) => {}
             _ => panic!("Wrong variant"),
@@ -522,17 +856,16 @@ mod tests {
     #[test]
     fn test_message_delta_serialization() {
         let delta = MessageDelta {
-            session_key: "test-key".to_string(),
-            role: Some(MessageRole::Assistant),
-            delta: "Hello".to_string(),
-            done: Some(false),
+            session_id: Some("test-key".to_string()),
+            text: "Hello".to_string(),
+            rendered: None,
         };
-        
+
         let serialized = serde_json::to_string(&delta).unwrap();
         let deserialized: MessageDelta = serde_json::from_str(&serialized).unwrap();
-        
-        assert_eq!(deserialized.session_key, "test-key");
-        assert_eq!(deserialized.delta, "Hello");
+
+        assert_eq!(deserialized.session_id, Some("test-key".to_string()));
+        assert_eq!(deserialized.text, "Hello");
     }
 
     #[test]
@@ -545,10 +878,10 @@ mod tests {
             title: "Test".to_string(),
             source: None,
         };
-        
+
         let serialized = serde_json::to_string(&item).unwrap();
         let deserialized: SessionListItem = serde_json::from_str(&serialized).unwrap();
-        
+
         assert_eq!(deserialized.id, "session-123");
         assert_eq!(deserialized.message_count, 5);
     }
@@ -556,18 +889,86 @@ mod tests {
     #[test]
     fn test_tool_complete_serialization() {
         let tool = ToolComplete {
-            session_key: "test-key".to_string(),
+            session_id: Some("test-key".to_string()),
             call_id: "call-123".to_string(),
-            result: "{\"success\": true}".to_string(),
-            duration_ms: Some(150),
+            result: serde_json::json!({"success": true}),
+            duration_ms: None,
             error: None,
         };
-        
+
         let serialized = serde_json::to_string(&tool).unwrap();
         let deserialized: ToolComplete = serde_json::from_str(&serialized).unwrap();
-        
+
         assert_eq!(deserialized.call_id, "call-123");
-        assert_eq!(deserialized.result, "{\"success\": true}");
-        assert_eq!(deserialized.duration_ms, Some(150));
+        assert_eq!(deserialized.result, serde_json::json!({"success": true}));
+        assert_eq!(deserialized.duration_ms, None);
     }
+
+    #[test]
+    fn test_secs_to_ms_conversion() {
+        // Verify secs_to_ms deserializer: 0.15s → 150ms
+        let json = r#"{"tool_id":"t1","result":null,"duration_s":0.15}"#;
+        let tool: ToolComplete = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.duration_ms, Some(150));
+    }
+
+    #[test]
+    fn test_tool_progress_deserialization_aliases() {
+        let json = r#"{"tool_name":"test-tool","preview":"some output"}"#;
+        let progress: ToolProgress = serde_json::from_str(json).unwrap();
+        assert_eq!(progress.call_id, "test-tool");
+        assert_eq!(progress.output, "some output");
+
+        let json2 = r#"{"name":"test-tool-2","text":"other output"}"#;
+        let progress2: ToolProgress = serde_json::from_str(json2).unwrap();
+        assert_eq!(progress2.call_id, "test-tool-2");
+        assert_eq!(progress2.output, "other output");
+    }
+
+    #[test]
+    fn test_complete_slash_path_serialization() {
+        let slash = TuiRequest::CompleteSlash {
+            text: "hello".to_string(),
+        };
+        let serialized = serde_json::to_string(&slash).unwrap();
+        assert!(serialized.contains(r#""text":"hello""#));
+
+        let path = TuiRequest::CompletePath {
+            word: "world".to_string(),
+        };
+        let serialized_path = serde_json::to_string(&path).unwrap();
+        assert!(serialized_path.contains(r#""word":"world""#));
+    }
+
+    #[test]
+    fn test_gateway_ready_missing_fields() {
+        let json = r#"{}"#;
+        let ready: GatewayReadyResponse = serde_json::from_str(json).unwrap();
+        assert!(ready.sessions.is_none());
+        assert!(ready.models.is_none());
+    }
+
+    #[test]
+    fn test_clarify_sudo_secret_serialization() {
+        let clarify = GatewayMessage::ClarifyRequest(ClarifyRequest {
+            request_id: "req-1".to_string(),
+            question: "sure?".to_string(),
+            choices: Some(vec!["yes".to_string()]),
+        });
+        let serialized = serde_json::to_string(&clarify).unwrap();
+        let deserialized: GatewayMessage = serde_json::from_str(&serialized).unwrap();
+        match deserialized {
+            GatewayMessage::ClarifyRequest(req) => {
+                assert_eq!(req.request_id, "req-1");
+                assert_eq!(req.question, "sure?");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+}
+
+/// Deserialize gateway's `duration_s` (float seconds) to `Option<u64>` milliseconds
+pub fn secs_to_ms<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let secs: Option<f64> = Option::deserialize(d)?;
+    Ok(secs.map(|s| (s * 1000.0).round() as u64))
 }
