@@ -2042,8 +2042,8 @@ impl App {
         if !focused {
             return Style::default().fg(base_color);
         }
-        // Cycle through 6 ANSI colors every 3 frames (~20fps cycling)
-        let cycle = ((animation_frame / 3) % 6) as u8;
+        // Cycle through 6 ANSI colors every 15 frames (~4fps cycling)
+        let cycle = ((animation_frame / 15) % 6) as u8;
         let color = match cycle {
             0 => Color::Indexed(1),   // Red
             1 => Color::Indexed(3),   // Yellow
