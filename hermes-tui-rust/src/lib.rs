@@ -14,6 +14,7 @@
 #![allow(missing_docs)] // Temporary during active development
 
 pub mod app;
+pub mod engine;
 pub mod error;
 pub mod handlers;
 pub mod protocol;

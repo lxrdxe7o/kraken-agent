@@ -558,11 +558,13 @@ impl App {
     /// Disconnect from the gateway
     /// Run the main event loop
     pub fn run(&mut self) -> Result<()> {
-        info!("Starting event loop");
+        info!("Starting event loop (demand-driven render engine)");
 
         while self.running {
-            // Poll for events at ~60fps (16ms per frame) — non-blocking
-            if event::poll(Duration::from_millis(16))? {
+            // Demand-driven poll timeout: respects the active-animation counter
+            // so the event loop sleeps deeply when nothing is animating.
+            let timeout = crate::engine::poll_timeout();
+            if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(key) => {
                         self.handle_key_event(key)?;
@@ -2125,7 +2127,7 @@ impl App {
         let config_snapshot = unsafe { &*config_ptr };
         let base_border_color: Color = Color::from(config_snapshot.theme.chat.border.clone());
 
-        self.terminal.draw(move |frame| {
+        crate::engine::draw_sync(&mut self.terminal, move |frame| {
             use ratatui::layout::Alignment;
             use ratatui::style::{Color, Modifier, Style};
             use ratatui::text::{Line, Span};
