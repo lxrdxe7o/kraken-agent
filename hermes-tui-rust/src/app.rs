@@ -143,6 +143,8 @@ pub struct App {
     shader_state: crate::ui::effects::ShaderState,
     /// Last completion query sent to gateway (to deduplicate)
     last_completion_query: Option<String>,
+    /// Whether the keybinding help overlay is visible
+    show_help: bool,
 }
 
 impl App {
@@ -222,6 +224,7 @@ impl App {
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
+            show_help: false,
         })
     }
 
@@ -462,6 +465,28 @@ impl App {
     /// Get the current focus pane
     pub fn focus_pane(&self) -> FocusPane {
         self.focus_pane
+    }
+
+    /// Cycle to the next pane in the order: Chat → Composer → Toolbar → Sidebar → Chat
+    pub fn focus_next_pane(&mut self) {
+        let next = match self.focus_pane {
+            FocusPane::Chat => FocusPane::Composer,
+            FocusPane::Composer => FocusPane::Toolbar,
+            FocusPane::Toolbar => FocusPane::Sidebar,
+            FocusPane::Sidebar => FocusPane::Chat,
+        };
+        self.set_focus_pane(next);
+    }
+
+    /// Cycle to the previous pane in the order: Chat → Sidebar → Toolbar → Composer → Chat
+    pub fn focus_prev_pane(&mut self) {
+        let prev = match self.focus_pane {
+            FocusPane::Chat => FocusPane::Sidebar,
+            FocusPane::Composer => FocusPane::Chat,
+            FocusPane::Toolbar => FocusPane::Composer,
+            FocusPane::Sidebar => FocusPane::Toolbar,
+        };
+        self.set_focus_pane(prev);
     }
 
     /// Set the current input text
@@ -739,6 +764,19 @@ impl App {
 
         // Check for quit keys first
         if self.check_quit_key(key) {
+            return Ok(());
+        }
+
+        // Help screen toggle — works in any mode
+        if key.code == KeyCode::Char('?') {
+            self.show_help = !self.show_help;
+            return Ok(());
+        }
+        // If help is shown, Esc closes it
+        if self.show_help {
+            if key.code == KeyCode::Esc {
+                self.show_help = false;
+            }
             return Ok(());
         }
 
@@ -1027,13 +1065,31 @@ impl App {
                     self.input_composer.set_active(true);
                     return Ok(());
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
+                // Tmux-style pane navigation: h/j/k/l in Normal mode
+                KeyCode::Char('h') => {
+                    self.focus_prev_pane();
+                    return Ok(());
+                }
+                KeyCode::Char('j') => {
+                    self.focus_next_pane();
+                    return Ok(());
+                }
+                KeyCode::Char('k') => {
+                    self.focus_prev_pane();
+                    return Ok(());
+                }
+                KeyCode::Char('l') => {
+                    self.focus_next_pane();
+                    return Ok(());
+                }
+                // Alternative scroll keys (non-vim)
+                KeyCode::Down => {
                     self.chat_component.select_next(&mut self.chat_state, &self.card_manager);
                     self.chat_component
                         .ensure_selected_in_view(&mut self.chat_state, &self.card_manager);
                     return Ok(());
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
+                KeyCode::Up => {
                     self.chat_component.select_prev(&mut self.chat_state, &self.card_manager);
                     self.chat_component
                         .ensure_selected_in_view(&mut self.chat_state, &self.card_manager);
@@ -1064,6 +1120,59 @@ impl App {
                 }
                 KeyCode::PageDown => {
                     self.chat_component.scroll_down(&mut self.chat_state, 10, &self.card_manager);
+                    return Ok(());
+                }
+                // Tmux-style: r = reload config
+                KeyCode::Char('r') => {
+                    info!("Config reload requested");
+                    let msg = Message::system("Config reload requested (r)");
+                    self.messages_mut().add_message(msg.clone());
+                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    return Ok(());
+                }
+                // Tmux-style: R = rename current session
+                KeyCode::Char('R') => {
+                    if let Some(session) = self.sessions().current_session() {
+                        info!("Rename session requested: {}", session.id);
+                        let msg = Message::system("Rename: rename is not yet interactive in TUI");
+                        self.messages_mut().add_message(msg.clone());
+                        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    }
+                    return Ok(());
+                }
+                // Tmux-style: x = kill-pane / close pane
+                KeyCode::Char('x') => {
+                    info!("Kill pane requested (x)");
+                    return Ok(());
+                }
+                // Tmux-style: c = new-window / new view
+                KeyCode::Char('c') => {
+                    self.create_new_session()?;
+                    return Ok(());
+                }
+                // Tmux-style: , = rename-window / rename view
+                KeyCode::Char(',') => {
+                    info!("Rename window requested (,)");
+                    let msg = Message::system("Rename window: not yet interactive in TUI");
+                    self.messages_mut().add_message(msg.clone());
+                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    return Ok(());
+                }
+                // Tmux-style: & = kill-window / kill view
+                KeyCode::Char('&') => {
+                    if let Some(session) = self.sessions().current_session() {
+                        info!("Kill window (session): {}", session.id);
+                        let msg = Message::system(format!("Killed view: {}", session.name.as_deref().unwrap_or("Unnamed")));
+                        self.messages_mut().add_message(msg.clone());
+                        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                        self.sessions_mut().clear_current_session();
+                        self.current_input.clear();
+                        self.input_composer.clear();
+                    }
                     return Ok(());
                 }
                 _ => {}
@@ -1137,6 +1246,72 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('m') {
             self.show_model_picker()?;
             return Ok(());
+        }
+
+        // Check for Ctrl+K - kill current session (tmux-style)
+        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('k') {
+            if let Some(session) = self.sessions().current_session() {
+                info!("Killing session: {}", session.id);
+                let msg = Message::system(format!("Killed session: {}", session.name.as_deref().unwrap_or("Unnamed")));
+                self.messages_mut().add_message(msg.clone());
+                self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                // Close the current session
+                self.sessions_mut().clear_current_session();
+                // Re-render
+                self.current_input.clear();
+                self.input_composer.clear();
+            }
+            return Ok(());
+        }
+
+        // Check for Ctrl+D - detach / close session (tmux-style)
+        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('d') {
+            if let Some(session) = self.sessions().current_session() {
+                info!("Detaching session: {}", session.id);
+                let msg = Message::system(format!("Detached from session: {}", session.name.as_deref().unwrap_or("Unnamed")));
+                self.messages_mut().add_message(msg.clone());
+                self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                // Close the current session
+                self.sessions_mut().clear_current_session();
+                self.current_input.clear();
+                self.input_composer.clear();
+            }
+            return Ok(());
+        }
+
+        // Check for Ctrl+A - attach / switch session (tmux-style: choose-session)
+        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('a') {
+            self.list_sessions()?;
+            return Ok(());
+        }
+
+        // Alt+Arrow pad for pane resize (tmux-style M-Left/Right/Up/Down)
+        if modifiers.contains(KeyModifiers::ALT) {
+            match code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    // Resize left analogue: focus left pane
+                    self.focus_prev_pane();
+                    return Ok(());
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    // Resize right analogue: focus right pane
+                    self.focus_next_pane();
+                    return Ok(());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    // Resize up analogue: focus up
+                    self.focus_prev_pane();
+                    return Ok(());
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    // Resize down analogue: focus down
+                    self.focus_next_pane();
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
 
         // Pass key to input composer for handling (only in Insert/Command mode)
@@ -1231,6 +1406,14 @@ impl App {
         // Handle /model locally with the model picker overlay
         if command == "model" || command.starts_with("model ") {
             self.show_model_picker()?;
+            return Ok(());
+        }
+
+        // Handle /clear locally
+        if command == "clear" {
+            self.messages_mut().clear();
+            self.card_manager.clear();
+            self.sync_chat_with_messages();
             return Ok(());
         }
 
@@ -1758,7 +1941,7 @@ impl App {
                 call_id: tool_progress.call_id.clone(),
                 status: ToolStatus::Running,
                 duration_ms: None,
-                arguments: None,
+                arguments: card.arguments().cloned(), // Preserve arguments
                 result: Some(tool_progress.output.clone()),
                 error: None,
             };
@@ -1778,6 +1961,15 @@ impl App {
 
         self.thinking = false;
 
+        // Convert result to a human-readable string without excessive JSON escaping for normal strings
+        let result_str = if tool_complete.result.is_null() {
+            "No result".to_string()
+        } else if let Some(s) = tool_complete.result.as_str() {
+            s.to_string() // Prevents string values from being rendered with literal `\n` instead of actual newlines
+        } else {
+            serde_json::to_string_pretty(&tool_complete.result).unwrap_or_else(|_| "Error serializing result".to_string())
+        };
+
         // Update card manager with result via call_id
         let status = if tool_complete.error.is_some() {
             ToolStatus::Failed
@@ -1794,8 +1986,8 @@ impl App {
                 call_id: tool_complete.call_id.clone(),
                 status,
                 duration_ms: tool_complete.duration_ms,
-                arguments: None,
-                result: Some(tool_complete.result.to_string()),
+                arguments: card.arguments().cloned(), // Preserve arguments
+                result: Some(result_str.clone()),
                 error: tool_complete.error.clone(),
             };
             card.update_from_data(&data);
@@ -1804,7 +1996,7 @@ impl App {
         let result_text = if let Some(ref error) = tool_complete.error {
             format!("Error: {error}")
         } else {
-            tool_complete.result.to_string()
+            result_str
         };
         let duration_str = tool_complete
             .duration_ms
@@ -1913,7 +2105,19 @@ impl App {
     fn handle_message_complete(&mut self, complete: MessageComplete) -> Result<()> {
         debug!("Message complete: text length={}", complete.text.len());
         self.thinking = false;
-        let message = Message::new(MessageRole::Assistant, complete.text);
+        
+        let mut message = Message::new(MessageRole::Assistant, complete.text);
+        message.usage = complete.usage.clone();
+        message.reasoning = complete.reasoning;
+        message.warning = complete.warning;
+        
+        // Update session usage stats
+        if let Some(ref usage) = complete.usage {
+            if let Some(session) = self.sessions_mut().current_session_mut() {
+                session.add_usage(usage);
+            }
+        }
+
         self.messages_mut().add_message(message.clone());
         self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
         self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
@@ -2217,7 +2421,7 @@ impl App {
             ref session_picker,
             ref mut model_picker,
             ref prompt_manager,
-            ref completion_popup,
+            ref mut completion_popup,
             ref subagent_list,
             ref mut chat_component,
             ref mut chat_state,
@@ -2405,7 +2609,8 @@ impl App {
 
                     // Sine-wave loading footer (Phase 4 — Aetheric Shaders)
                     if wave_active {
-                        crate::ui::wave::render_wave_footer(frame, main_layout[4], wave_tick);
+                        let usage = crate::protocol::types::TokenUsage::default().get_mock_detailed_usage();
+                        crate::ui::wave::render_wave_footer(frame, main_layout[4], wave_tick, usage);
                     }
 
                     // Sidebar with animated border
@@ -2446,15 +2651,12 @@ impl App {
                 prompt_manager.render(frame, overlay_area);
             }
             if completion_popup.is_visible() {
-                // Position near the bottom of the content area
-                let popup_y = content_area.y + content_area.height.saturating_sub(12);
-                let popup_area = Rect {
-                    x: (area.width / 2).saturating_sub(20),
-                    y: popup_y,
-                    width: 40.min(area.width),
-                    height: 10.min(content_area.height),
-                };
-                completion_popup.render(frame, popup_area, animation_frame);
+                completion_popup.render(frame, overlay_area, animation_frame);
+            }
+
+            // Show help overlay (tmux-style help screen)
+            if self.show_help {
+                crate::ui::help::HelpOverlay::render(frame, overlay_area);
             }
 
             // Apply global aetheric shaders (Phase 4.2)
@@ -2496,12 +2698,78 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         let session_list = sessions.session_list();
         let current_id = sessions.current_session_id();
+        let current_session = sessions.current_session();
 
-        for session in session_list.iter().take(10) {
+        // 1. Current Session Stats
+        if let Some(session) = current_session {
+            lines.push(Line::from(vec![
+                Span::styled(" SESSION STATS ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
+            ]));
+            
+            let usage = &session.total_usage;
+            lines.push(Line::from(vec![
+                Span::styled("  In:  ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:>8} tokens", usage.prompt_tokens), Style::default().fg(Color::Rgb(166, 226, 46))),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Out: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:>8} tokens", usage.completion_tokens), Style::default().fg(Color::Rgb(253, 151, 31))),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Total:", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:>8} tokens", usage.total_tokens), Style::default().fg(Color::Rgb(102, 217, 239))),
+            ]));
+            
+            if let Some(read) = usage.cache_read_tokens {
+                if read > 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Cache Read:", Style::default().fg(Color::Gray)),
+                        Span::styled(format!("{:>8} tokens", read), Style::default().fg(Color::Rgb(174, 129, 255))),
+                    ]));
+                }
+            }
+
+            lines.push(Line::from(vec![
+                Span::styled("  Cost: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("   ${:.4}", session.total_cost), Style::default().fg(Color::Rgb(249, 38, 114)).bold()),
+            ]));
+
+            // Tool call count in current session
+            let tool_calls = session.messages.to_vec().iter().filter(|m| m.is_tool()).count();
+            lines.push(Line::from(vec![
+                Span::styled("  Tools: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:>9} calls", tool_calls), Style::default().fg(Color::Yellow)),
+            ]));
+            
+            lines.push(Line::from(""));
+            
+            lines.push(Line::from(vec![
+                Span::styled(" CONTEXT WINDOW ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
+            ]));
+            
+            let total = usage.total_tokens;
+            let limit = 128000; // Default assumption
+            let pct = (total as f64 / limit as f64 * 100.0).min(100.0);
+            
+            lines.push(Line::from(vec![
+                Span::styled("  Usage: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:.1}%", pct), Style::default().fg(if pct > 80.0 { Color::Red } else { Color::Green })),
+                Span::styled(format!(" ({}k/{}k)", total / 1000, limit / 1000), Style::default().fg(Color::DarkGray)),
+            ]));
+            
+            lines.push(Line::from(""));
+        }
+
+        // 2. Recent Sessions List
+        lines.push(Line::from(vec![
+            Span::styled(" RECENT SESSIONS ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
+        ]));
+
+        for session in session_list.iter().take(8) {
             let name = session.name.as_deref().unwrap_or("Unnamed");
             let is_current = current_id.is_some_and(|id| id == &session.id);
 
-            let prefix = if is_current { "▸ " } else { "  " };
+            let prefix = if is_current { "◈ " } else { "◇ " };
             let style = if is_current {
                 Style::new()
                     .fg(Color::Rgb(166, 226, 46))
@@ -2708,6 +2976,7 @@ mod tests {
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
+            show_help: false,
         };
     }
 
@@ -2761,6 +3030,7 @@ mod tests {
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
+            show_help: false,
         };
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);

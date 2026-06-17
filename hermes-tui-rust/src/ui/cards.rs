@@ -5,7 +5,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Padding, Paragraph, Wrap},
     Frame,
@@ -108,7 +108,7 @@ pub struct CardComponent {
     card_type: CardType,
     /// Card title
     title: String,
-    /// Card content
+    /// Card content (legacy/default summary)
     content: String,
     /// Unique call ID for tool tracking
     call_id: String,
@@ -122,6 +122,12 @@ pub struct CardComponent {
     status: Option<ToolStatus>,
     /// Colors from configuration
     colors: ChatColorsRgb,
+    /// Tool arguments
+    arguments: Option<String>,
+    /// Tool result
+    result: Option<String>,
+    /// Tool error
+    error: Option<String>,
 }
 
 impl CardComponent {
@@ -142,6 +148,9 @@ impl CardComponent {
             spinner_frame: 0,
             status: None,
             colors,
+            arguments: None,
+            result: None,
+            error: None,
         }
     }
 
@@ -205,6 +214,9 @@ impl CardComponent {
             spinner_frame: 0,
             status: Some(data.status),
             colors,
+            arguments: data.arguments.clone(),
+            result: data.result.clone(),
+            error: data.error.clone(),
         }
     }
 
@@ -214,6 +226,9 @@ impl CardComponent {
         self.content = Self::tool_card_content(data, self.spinner_frame);
         self.tool_name = data.tool_name.clone();
         self.status = Some(data.status);
+        self.arguments = data.arguments.clone();
+        self.result = data.result.clone();
+        self.error = data.error.clone();
     }
 
     /// Toggle the expanded state of the card
@@ -236,6 +251,12 @@ impl CardComponent {
     #[must_use]
     pub fn tool_name(&self) -> &str {
         &self.tool_name
+    }
+
+    /// Get tool arguments
+    #[must_use]
+    pub fn arguments(&self) -> Option<&String> {
+        self.arguments.as_ref()
     }
 
     /// Check if the card is expanded
@@ -343,17 +364,6 @@ impl CardComponent {
         self.colors = colors;
     }
 
-    /// Get the appropriate border color for the card type
-    fn border_color(&self) -> ratatui::style::Color {
-        match self.card_type {
-            CardType::Info => self.colors.assistant_text, // Use a distinct color for info
-            CardType::Success => ratatui::style::Color::Green,
-            CardType::Warning => ratatui::style::Color::Yellow,
-            CardType::Error => ratatui::style::Color::Red,
-            CardType::Tool => self.colors.tool_text,
-        }
-    }
-
     /// Get the appropriate background color for the card type
     fn bg_color(&self) -> ratatui::style::Color {
         match self.card_type {
@@ -380,10 +390,9 @@ impl CardComponent {
     pub fn render(&self, frame: &mut Frame, area: Rect, animation_frame: u64) {
         let is_tool = self.card_type == CardType::Tool;
 
-        // Build title with expand/collapse indicator for tool cards
+        // Build title with fixed indicator for tool cards
         let title = if is_tool {
-            let indicator = if self.expanded { " ▼ " } else { " > " };
-            format!("{}{}", indicator, self.title)
+            format!(" ▼ {}", self.title)
         } else {
             format!(" {} ", self.title)
         };
@@ -395,9 +404,8 @@ impl CardComponent {
         crate::ui::borders::render_gradient_border(frame.buffer_mut(), area, animation_frame, is_running_tool);
 
         // Create a block for the title and background
-        // We use a block without borders because we've already rendered them
         let block = Block::default()
-            .title(title)
+            .title(Span::styled(title, Style::default().bold()))
             .bg(self.bg_color());
 
         // Inner area (accounting for the border we just drew)
@@ -411,31 +419,53 @@ impl CardComponent {
         // Render the background/title block
         frame.render_widget(block, area);
 
-        // Determine what content to show based on expanded state
-        let display_content = if is_tool && !self.expanded {
-            // Collapsed: show only first line or truncated summary
-            let first_line = self.content.lines().next().unwrap_or(&self.content);
-            if first_line.len() > area.width as usize {
-                format!(
-                    "{}...  (press Enter to expand)",
-                    &first_line[..area.width.saturating_sub(25) as usize]
-                )
-            } else {
-                format!("{first_line}  (Enter to expand)")
+        if inner_area.height == 0 || inner_area.width == 0 {
+            return;
+        }
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        if is_tool {
+            // Always show detailed breakdown
+            if let Some(args) = &self.arguments {
+                lines.push(Line::from(vec![
+                    Span::styled(" Args: ", Style::default().fg(Color::Gray).italic()),
+                    Span::styled(args, Style::default().fg(self.colors.code_text)),
+                ]));
+            }
+            
+            if let Some(res) = &self.result {
+                lines.push(Line::from(vec![
+                    Span::styled(" Result: ", Style::default().fg(Color::Gray).italic()),
+                ]));
+                
+                // Parse ANSI codes in result
+                let text = crate::utils::ansi::ansi_to_text(res);
+                for line in text.lines {
+                    let mut spans = vec![Span::raw("   ")];
+                    spans.extend(line.spans);
+                    lines.push(Line::from(spans));
+                }
+            } else if let Some(err) = &self.error {
+                lines.push(Line::from(vec![
+                    Span::styled(" Error: ", Style::default().fg(Color::Red).bold()),
+                    Span::styled(err, Style::default().fg(Color::Red)),
+                ]));
+            } else if self.status == Some(ToolStatus::Running) {
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(Self::running_spinner(animation_frame as u32 / 5), Style::default().fg(Color::Yellow)),
+                ]));
             }
         } else {
-            self.content.clone()
-        };
-
-        // Create content text, handling newlines properly
-        let lines: Vec<Line> = display_content
-            .lines()
-            .map(|l| Line::from(Span::styled(l, Style::new().fg(self.text_color()))))
-            .collect();
-        let content_text = Text::from(lines);
+            // Standard Card View
+            for line in self.content.lines() {
+                lines.push(Line::from(Span::styled(line, Style::new().fg(self.text_color()))));
+            }
+        }
 
         // Create paragraph with content and wrapping
-        let paragraph = Paragraph::new(content_text)
+        let paragraph = Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
             .style(Style::new().bg(self.bg_color()))
             .block(Block::new().padding(Padding::new(1, 1, 0, 1)));
@@ -564,7 +594,7 @@ impl CardManager {
                 call_id: call_id.to_string(),
                 status,
                 duration_ms: None,
-                arguments: None,
+                arguments: card.arguments().cloned(), // Preserve arguments
                 result,
                 error,
             };

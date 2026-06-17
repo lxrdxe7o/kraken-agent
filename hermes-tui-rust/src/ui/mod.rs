@@ -12,6 +12,7 @@ pub mod dashboard;
 pub mod effects;
 pub mod gif;
 pub mod hashline;
+pub mod help;
 pub mod ide;
 pub mod kanban;
 pub mod model_picker;

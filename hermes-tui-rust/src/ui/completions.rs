@@ -7,8 +7,9 @@ use crate::protocol::types::CompletionItem;
 use crate::state::config::ChatColorsRgb;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Clear, List, ListItem},
+    style::{Color, Modifier, Style, Stylize},
+    text::Line,
+    widgets::{Block, Borders, Clear, List, ListItem, ListState},
     Frame,
 };
 
@@ -20,6 +21,8 @@ pub struct CompletionPopup {
     visible: bool,
     /// Currently selected index
     selected_index: usize,
+    /// List state for scrolling
+    state: ListState,
     /// Start position to replace in input
     replace_from: Option<usize>,
     /// UI colors from configuration
@@ -34,6 +37,7 @@ impl CompletionPopup {
             items: Vec::new(),
             visible: false,
             selected_index: 0,
+            state: ListState::default(),
             replace_from: None,
             colors,
         }
@@ -44,6 +48,7 @@ impl CompletionPopup {
         self.items = items;
         self.replace_from = replace_from;
         self.selected_index = 0;
+        self.state.select(Some(0));
         self.visible = !self.items.is_empty();
     }
 
@@ -52,6 +57,7 @@ impl CompletionPopup {
         self.visible = false;
         self.items.clear();
         self.replace_from = None;
+        self.state.select(None);
     }
 
     /// Check if the popup is visible
@@ -80,6 +86,7 @@ impl CompletionPopup {
     pub fn select_next(&mut self) {
         if !self.items.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.items.len();
+            self.state.select(Some(self.selected_index));
         }
     }
 
@@ -91,27 +98,22 @@ impl CompletionPopup {
             } else {
                 self.selected_index -= 1;
             }
+            self.state.select(Some(self.selected_index));
         }
     }
 
-    /// Render the completion popup above the composer area
-    pub fn render(&self, frame: &mut Frame, composer_area: Rect, animation_frame: u64) {
+    /// Render the completion popup centered on the screen
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, animation_frame: u64) {
         if !self.visible || self.items.is_empty() {
             return;
         }
 
-        // Use the passed area directly — caller (app.rs) already positions it above the composer.
-        // No additional Y-offset to avoid double-subtraction bug.
-        let max_height = 8;
-        let height = (self.items.len() as u16 + 2)
-            .min(max_height)
-            .min(composer_area.height);
-        let popup_area = Rect::new(
-            composer_area.x,
-            composer_area.y,
-            composer_area.width.min(40).max(10),
-            height,
-        );
+        // Center and scale popup: 60% width, 60% height
+        let width = (area.width * 60 / 100).max(40).min(area.width);
+        let height = (area.height * 60 / 100).max(10).min(area.height);
+        let x = area.x + (area.width - width) / 2;
+        let y = area.y + (area.height - height) / 2;
+        let popup_area = Rect::new(x, y, width, height);
 
         // Clear the area to overlay the popup cleanly
         frame.render_widget(Clear, popup_area);
@@ -131,7 +133,7 @@ impl CompletionPopup {
                 let style = if i == self.selected_index {
                     Style::default()
                         .fg(Color::Yellow)
-                        .bg(self.colors.user_bg)
+                        .bg(Color::Rgb(40, 40, 50))
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.colors.user_text)
@@ -141,16 +143,33 @@ impl CompletionPopup {
             .collect();
 
         let block = Block::default()
-            .title(" Completions ")
+            .title(" COMPLETIONS ".bold())
+            .title_alignment(ratatui::layout::Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.colors.border));
 
-        let list = List::new(list_items).block(block);
+        let list = List::new(list_items)
+            .block(block)
+            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
-        frame.render_widget(list, popup_area);
+        frame.render_stateful_widget(list, popup_area, &mut self.state);
 
         // Render animated gradient border over the block
         crate::ui::borders::render_gradient_border(frame.buffer_mut(), popup_area, animation_frame, true);
+        
+        // Render helper hints
+        let hints = Line::from(vec![
+            " ↑↓ ".bold().yellow(), "navigate".into(),
+            " │ ".into(),
+            " Enter ".bold().yellow(), "apply".into(),
+            " │ ".into(),
+            " Esc ".bold().yellow(), "cancel".into(),
+        ]).alignment(ratatui::layout::Alignment::Center);
+        
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(hints),
+            Rect::new(popup_area.x, popup_area.y + popup_area.height - 2, popup_area.width, 1)
+        );
     }
 }
 

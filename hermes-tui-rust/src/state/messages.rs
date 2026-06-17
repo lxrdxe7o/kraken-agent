@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use crate::protocol::types::MessageRole;
+use crate::protocol::types::{MessageRole, TokenUsage};
 
 /// Maximum number of messages to keep in history (to prevent unbounded memory usage)
 pub const MAX_MESSAGE_HISTORY: usize = 1000;
@@ -36,6 +36,15 @@ pub struct Message {
     /// Whether this message is complete
     #[serde(default)]
     pub complete: bool,
+    /// Token usage for this message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    /// Optional reasoning from the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Optional warning from the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 impl Message {
@@ -50,6 +59,9 @@ impl Message {
             name: None,
             streaming: false,
             complete: true,
+            usage: None,
+            reasoning: None,
+            warning: None,
         }
     }
 
@@ -84,6 +96,9 @@ impl Message {
             name: Some(name.into()),
             streaming: false,
             complete: true,
+            usage: None,
+            reasoning: None,
+            warning: None,
         }
     }
 
@@ -102,6 +117,9 @@ impl Message {
             name: None,
             streaming: true,
             complete: false,
+            usage: None,
+            reasoning: None,
+            warning: None,
         }
     }
 
@@ -464,16 +482,8 @@ mod tests {
     fn test_message_history_contains_id() {
         let mut history = MessageHistory::new();
 
-        let msg = Message {
-            role: MessageRole::Assistant,
-            content: "Test".to_string(),
-            timestamp: Utc::now(),
-            message_id: Some("msg-123".to_string()),
-            context: None,
-            name: None,
-            streaming: false,
-            complete: true,
-        };
+        let mut msg = Message::new(MessageRole::Assistant, "Test");
+        msg.message_id = Some("msg-123".to_string());
 
         history.push(msg);
 

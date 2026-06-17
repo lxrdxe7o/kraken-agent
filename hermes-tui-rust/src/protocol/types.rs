@@ -194,6 +194,43 @@ pub struct MessageDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rendered: Option<String>,
 }
+/// Token usage information
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub prompt_tokens: usize,
+    #[serde(default)]
+    pub completion_tokens: usize,
+    #[serde(default)]
+    pub total_tokens: usize,
+    #[serde(default)]
+    pub cache_read_tokens: Option<usize>,
+    #[serde(default)]
+    pub cache_write_tokens: Option<usize>,
+    #[serde(default)]
+    pub prompt_category_tokens: Option<u32>,
+    #[serde(default)]
+    pub tool_call_tokens: Option<u32>,
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
+    #[serde(default)]
+    pub output_tokens: Option<u32>,
+    #[serde(default)]
+    pub failed_tool_call_tokens: Option<u32>,
+}
+
+impl TokenUsage {
+    pub fn get_mock_detailed_usage(&self) -> (u32, u32, u32, u32, u32) {
+        (
+            self.prompt_category_tokens.unwrap_or(150),
+            self.tool_call_tokens.unwrap_or(80),
+            self.reasoning_tokens.unwrap_or(400),
+            self.output_tokens.unwrap_or(200),
+            self.failed_tool_call_tokens.unwrap_or(0),
+        )
+    }
+}
+
 /// Message complete
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageComplete {
@@ -202,7 +239,7 @@ pub struct MessageComplete {
     pub text: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<serde_json::Value>,
+    pub usage: Option<TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

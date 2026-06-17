@@ -43,14 +43,12 @@ pub struct ModelPicker {
     provider_state: ListState,
     /// Table state for model scrolling
     model_state: TableState,
-    /// UI colors from configuration
-    colors: ChatColorsRgb,
 }
 
 impl ModelPicker {
     /// Create a new model picker instance
     #[must_use]
-    pub fn new(colors: ChatColorsRgb) -> Self {
+    pub fn new(_colors: ChatColorsRgb) -> Self {
         Self {
             providers: Vec::new(),
             visible: false,
@@ -60,7 +58,6 @@ impl ModelPicker {
             model_index: 0,
             provider_state: ListState::default(),
             model_state: TableState::default(),
-            colors,
         }
     }
 

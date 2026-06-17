@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::protocol::types::SessionListItem;
+use crate::protocol::types::{SessionListItem, TokenUsage};
 use crate::state::messages::MessageHistory;
 
 /// Session information
@@ -33,6 +33,10 @@ pub struct Session {
     pub provider: Option<String>,
     /// Preview text (first few characters of the first message)
     pub preview: Option<String>,
+    /// Cumulative token usage for this session
+    pub total_usage: TokenUsage,
+    /// Cumulative estimated cost for this session (in USD)
+    pub total_cost: f64,
 }
 
 impl Session {
@@ -50,6 +54,8 @@ impl Session {
             model: None,
             provider: None,
             preview: None,
+            total_usage: TokenUsage::default(),
+            total_cost: 0.0,
         }
     }
 
@@ -66,6 +72,41 @@ impl Session {
         self.messages.push(message.into());
         self.updated_at = Utc::now();
         self.update_preview();
+    }
+
+    /// Add token usage to this session
+    pub fn add_usage(&mut self, usage: &TokenUsage) {
+        self.total_usage.prompt_tokens += usage.prompt_tokens;
+        self.total_usage.completion_tokens += usage.completion_tokens;
+        self.total_usage.total_tokens += usage.total_tokens;
+        
+        if let Some(read) = usage.cache_read_tokens {
+            self.total_usage.cache_read_tokens = Some(self.total_usage.cache_read_tokens.unwrap_or(0) + read);
+        }
+        if let Some(write) = usage.cache_write_tokens {
+            self.total_usage.cache_write_tokens = Some(self.total_usage.cache_write_tokens.unwrap_or(0) + write);
+        }
+
+        if let Some(prompt_cat) = usage.prompt_category_tokens {
+            self.total_usage.prompt_category_tokens = Some(self.total_usage.prompt_category_tokens.unwrap_or(0) + prompt_cat);
+        }
+        if let Some(tool_call) = usage.tool_call_tokens {
+            self.total_usage.tool_call_tokens = Some(self.total_usage.tool_call_tokens.unwrap_or(0) + tool_call);
+        }
+        if let Some(reasoning) = usage.reasoning_tokens {
+            self.total_usage.reasoning_tokens = Some(self.total_usage.reasoning_tokens.unwrap_or(0) + reasoning);
+        }
+        if let Some(output) = usage.output_tokens {
+            self.total_usage.output_tokens = Some(self.total_usage.output_tokens.unwrap_or(0) + output);
+        }
+        if let Some(failed) = usage.failed_tool_call_tokens {
+            self.total_usage.failed_tool_call_tokens = Some(self.total_usage.failed_tool_call_tokens.unwrap_or(0) + failed);
+        }
+
+        // Very rough cost calculation (e.g. $10 per 1M tokens)
+        // In a real app, this would be model-specific
+        let cost_per_token = 0.00001; 
+        self.total_cost += usage.total_tokens as f64 * cost_per_token;
     }
 
     /// Update the preview text based on the first message
@@ -304,6 +345,11 @@ impl SessionManager {
     /// Set the current session (convenience method)
     pub fn set_current_session(&mut self, session_id: impl Into<String>) {
         self.set_current_session_id(session_id);
+    }
+
+    /// Clear the current active session (set it to None)
+    pub fn clear_current_session(&mut self) {
+        self.current_session_id = None;
     }
 
     /// Set sessions from gateway list response

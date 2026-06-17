@@ -290,6 +290,48 @@ pub fn truncate_middle(text: &str, width: u16) -> String {
     left + ellipsis + &right
 }
 
+/// Truncate text to a specified character count, respecting UTF-8 boundaries
+/// and skipping ANSI escape codes for the count.
+#[must_use]
+pub fn truncate_safe(text: &str, max_chars: usize) -> String {
+    let mut result = String::new();
+    let mut char_count = 0;
+    let mut i = 0;
+    let bytes = text.as_bytes();
+
+    while i < bytes.len() && char_count < max_chars {
+        if bytes[i] == b'\x1b' {
+            // Found escape sequence, copy it without counting as a character
+            result.push(bytes[i] as char);
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                result.push(bytes[i] as char);
+                i += 1;
+                // Skip until final byte
+                while i < bytes.len() {
+                    let c = bytes[i];
+                    result.push(c as char);
+                    i += 1;
+                    if (b'@'..=b'~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Regular character
+            if let Some(c) = text[i..].chars().next() {
+                result.push(c);
+                i += c.len_utf8();
+                char_count += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    result
+}
+
 /// Pad text to a specified width
 /// If text is shorter than width, it will be padded with spaces
 #[must_use]

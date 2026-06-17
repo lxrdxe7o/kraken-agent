@@ -9106,7 +9106,7 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
-            max_models=50,
+            max_models=100,
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -9172,7 +9172,7 @@ def _(rid, params: dict) -> dict:
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
         payload = build_models_payload(
-            ctx, picker_hints=True, max_models=50,
+            ctx, picker_hints=True, max_models=100,
         )
         provider_data = next(
             (p for p in payload["providers"] if p["slug"] == slug), None

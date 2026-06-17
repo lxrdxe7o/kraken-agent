@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::state::config::ChatColorsRgb;
+use crate::utils::ansi::AnsiParser;
 
 /// Render markdown content into ratatui lines.
 ///
@@ -27,6 +28,7 @@ pub fn render_markdown<'a>(content: &'a str, colors: &ChatColorsRgb, width: u16)
     let mut code_lang = String::new();
     let mut list_stack: Vec<u64> = Vec::new();
     let mut pending_list_prefix = None::<String>;
+    let mut ansi_parser = AnsiParser::new();
 
     for event in parser {
         match event {
@@ -140,7 +142,25 @@ pub fn render_markdown<'a>(content: &'a str, colors: &ChatColorsRgb, width: u16)
                     if let Some(prefix) = pending_list_prefix.take() {
                         current_line.push(Span::styled(prefix, base_style(colors)));
                     }
-                    current_line.push(Span::styled(text.to_string(), current_style));
+                    
+                    // Parse ANSI codes in the text
+                    let parsed = ansi_parser.parse(&text);
+                    for (segment, ansi_style) in parsed {
+                        let mut final_style = current_style;
+                        
+                        // Merge ANSI style with markdown style
+                        let r_style = ansi_style.to_ratatui_style();
+                        if let Some(fg) = r_style.fg {
+                            final_style = final_style.fg(fg);
+                        }
+                        if let Some(bg) = r_style.bg {
+                            final_style = final_style.bg(bg);
+                        }
+                        final_style.add_modifier |= r_style.add_modifier;
+                        final_style.sub_modifier |= r_style.sub_modifier;
+                        
+                        current_line.push(Span::styled(segment, final_style));
+                    }
                 }
             }
             Event::Code(code) => {

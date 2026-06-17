@@ -30,7 +30,7 @@ pub fn render_gradient_border(buf: &mut Buffer, area: Rect, animation_frame: u64
     }
 
     // Base time factor for animations
-    let t = animation_frame as f64 * 0.12;
+    let t = animation_frame as f64 * 0.08;
 
     // Corners
     draw_border_cell(buf, area.x, area.y, area, t, TOP_LEFT);

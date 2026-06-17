@@ -548,10 +548,10 @@ impl ChatComponent {
     ) {
         let role_style = self.get_role_style(message.role.clone());
         let role_glyph = match message.role {
-            MessageRole::User => "[U]",
-            MessageRole::Assistant => "[A]",
-            MessageRole::System => "[S]",
-            MessageRole::Tool => "[T]",
+            MessageRole::User => " 👤 ",
+            MessageRole::Assistant => " 🤖 ",
+            MessageRole::System => " ⚙️ ",
+            MessageRole::Tool => " 🛠️ ",
         };
 
         // Check if this message has an inline tool card
@@ -675,13 +675,14 @@ impl ChatComponent {
 
             // Get message content, possibly truncated for system messages
             let display_content = if message.role == MessageRole::System
-                && message.content.len() > 400
+                && message.content.chars().count() > 400
                 && !message
                     .message_id
                     .as_deref()
                     .is_some_and(|id| state.expanded_systems.contains(id))
             {
-                format!("{}...\n (press Enter to expand)", &message.content[..397])
+                let truncated = crate::utils::text::truncate_safe(&message.content, 397);
+                format!("{}...\n (press Enter to expand)", truncated)
             } else {
                 message.content.clone()
             };
@@ -691,7 +692,25 @@ impl ChatComponent {
                 role: message.role.clone(),
                 ..message.clone()
             };
-            let lines = self.render_message_content(&temp_msg, content_width);
+            let mut lines = self.render_message_content(&temp_msg, content_width);
+
+            // Add reasoning if present (Phase 4 DSL extensions)
+            if let Some(reasoning) = &message.reasoning {
+                lines.insert(0, Line::from(vec![
+                    Span::styled(" 🧠 Reasoning: ", Style::default().fg(Color::Rgb(174, 129, 255)).italic()),
+                    Span::styled(reasoning, Style::default().fg(Color::DarkGray).italic()),
+                ]));
+                lines.insert(1, Line::from(""));
+            }
+
+            // Add warning if present
+            if let Some(warning) = &message.warning {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled(" ⚠️ Warning: ", Style::default().fg(Color::Yellow).bold()),
+                    Span::styled(warning, Style::default().fg(Color::Yellow)),
+                ]));
+            }
 
             let paragraph =
                 Paragraph::new(Text::from(lines)).wrap(ratatui::widgets::Wrap { trim: false });
