@@ -53,35 +53,34 @@ impl Banner {
     }
 
     /// Render the smaller version of the banner (just tagline or logo)
+    ///
+    /// Matches the default TUI's CompactBanner style: a rule-line with the
+    /// brand name centered and surrounded by fill dashes filling the width.
     pub fn render_mini(&self, frame: &mut Frame, area: Rect) {
+        let width = area.width as usize;
+        let brand = "KRAKEN AGENT";
+        let label = format!(" {} ", brand);
+        let total_dashes = width.saturating_sub(label.len());
+        let left_dashes = total_dashes / 2;
+        let right_dashes = total_dashes - left_dashes;
+        let green = Color::Rgb(166, 226, 46);
+
         let line = Line::from(vec![
             Span::styled(
-                " ≡ ",
-                Style::default()
-                    .fg(Color::Rgb(174, 129, 255))
-                    .add_modifier(Modifier::BOLD),
+                "─".repeat(left_dashes),
+                Style::default().fg(green).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "KRAKEN AGENT",
-                Style::default()
-                    .fg(Color::Rgb(166, 226, 46))
-                    .add_modifier(Modifier::BOLD),
+                brand,
+                Style::default().fg(green).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " from the abyss ",
-                Style::default()
-                    .fg(Color::Rgb(117, 113, 94))
-                    .add_modifier(Modifier::ITALIC),
-            ),
-            Span::styled(
-                " ≡ ",
-                Style::default()
-                    .fg(Color::Rgb(174, 129, 255))
-                    .add_modifier(Modifier::BOLD),
+                "─".repeat(right_dashes),
+                Style::default().fg(green).add_modifier(Modifier::BOLD),
             ),
         ]);
 
-        let paragraph = Paragraph::new(line).alignment(Alignment::Center);
+        let paragraph = Paragraph::new(line);
         frame.render_widget(paragraph, area);
     }
 }

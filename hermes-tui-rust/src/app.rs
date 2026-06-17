@@ -2281,6 +2281,7 @@ impl App {
                     let chat_inner = chat_block.inner(chat_area);
                     frame.render_widget(chat_block, chat_area);
                     chat_component.set_visible_height(chat_inner.height.saturating_sub(2));
+                    chat_component.set_show_logo_on_empty(true);
                     chat_component.render(frame, chat_inner, unsafe { &*card_manager_ptr }, unsafe { &*subagent_list_ptr }, connected);
 
                     // Activity (hashline only - cards are drawn inline in chat)

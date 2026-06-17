@@ -164,6 +164,7 @@ impl IdeView {
         frame.render_widget(chat_block, chunks[2]);
 
         chat_component.set_visible_height(chat_inner.height.saturating_sub(2));
+        chat_component.set_show_logo_on_empty(false);
         chat_component.render(frame, chat_inner, card_manager, subagent_list, connected);
     }
 }

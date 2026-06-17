@@ -44,6 +44,8 @@ pub struct ChatComponent {
     show_timestamps: bool,
     /// Tracking which system messages are expanded (by `message_id`)
     expanded_systems: HashSet<String>,
+    /// Whether to show the Kraken ASCII logo when the chat is empty
+    show_logo_on_empty: bool,
     /// Content width used for word-wrap calculations (set each render)
     inner_width: u16,
     /// Currently selected message index (for Normal mode navigation)
@@ -62,6 +64,7 @@ impl ChatComponent {
             colors,
             show_timestamps,
             inner_width: 80,
+            show_logo_on_empty: true,
             expanded_systems: HashSet::new(),
             selected_index: None,
         }
@@ -283,6 +286,18 @@ impl ChatComponent {
     pub fn set_messages(&mut self, messages: Vec<Message>, card_manager: &CardManager) {
         self.messages = messages;
         self.scroll_to_bottom(card_manager);
+    }
+
+    /// Set whether to show the logo when chat is empty
+    #[must_use]
+    pub fn with_show_logo_on_empty(mut self, show: bool) -> Self {
+        self.show_logo_on_empty = show;
+        self
+    }
+
+    /// Set whether to show the logo when chat is empty
+    pub fn set_show_logo_on_empty(&mut self, show: bool) {
+        self.show_logo_on_empty = show;
     }
 
     /// Toggle expansion of a system message
@@ -808,65 +823,7 @@ impl ChatComponent {
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
 
-        // Layout for landing page: Left (ASCII), Right (Info)
-        let layout = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([
-                ratatui::layout::Constraint::Length(50), // Fixed width for ASCII art
-                ratatui::layout::Constraint::Min(1),     // Remaining space for info
-            ])
-            .split(inner_area);
-        // Left: ASCII Art
-        let hero_lines = [
-            "⣴⣶⣤⡤⠦⣤⣀⣤⠆     ⣈⣭⣿⣶⣿⣦⣼⣆",
-            " ⠉⠻⢿⣿⠿⣿⣿⣶⣦⠤⠄⡠⢾⣿⣿⡿⠋⠉⠉⠻⣿⣿⡛⣦",
-            "      ⠈⢿⣿⣟⠦ ⣾⣿⣿⣷    ⠻⠿⢿⣿⣧⣄",
-            "       ⣸⣿⣿⢧ ⢻⠻⣿⣿⣷⣄⣀⠄⠢⣀⡀⠈⠙⠿⠄",
-            "      ⢠⣿⣿⣿⠈    ⣻⣿⣿⣿⣿⣿⣿⣿⣛⣳⣤⣀⣀",
-            " ⢠⣧⣶⣥⡤⢄ ⣸⣿⣿⠘  ⢀⣴⣿⣿⡿⠛⣿⣿⣧⠈⢿⠿⠟⠛⠻⠿⠄",
-            "⣰⣿⣿⠛⠻⣿⣿⡦⢹⣿⣷   ⢊⣿⣿⡏  ⢸⣿⣿⡇ ⢀⣠⣄⣾⠄",
-            " ⣠⣿⠿⠛ ⢀⣿⣿⣷⠘⢿⣿⣦⡀ ⢸⢿⣿⣿⣄ ⣸⣿⣿⡇⣪⣿⡿⠿⣿⣷⡄",
-            " ⠙⠃   ⣼⣿⡟  ⠈⠻⣿⣿⣦⣌⡇⠻⣿⣿⣷⣿⣿⣿ ⣿⣿⡇ ⠛⠻⢷⣄",
-            "    ⢻⣿⣿⣄   ⠈⠻⣿⣿⣿⣷⣿⣿⣿⣿⣿⡟ ⠫⢿⣿⡆",
-            "     ⠻⣿⣿⣿⣿⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⡟⢀⣀⣤⣾⡿⠃",
-            "                  from the abyss",
-        ];
-
-        let mut hero_spans = Vec::new();
-
-        // Simple time-based animation offset
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as usize;
-        let offset = (time / 100) % 6;
-
-        for (i, line) in hero_lines.iter().enumerate() {
-            // Color gradient that animates
-            let color_idx = (i + offset) % 6;
-            let color = match color_idx {
-                0 => Color::Rgb(166, 226, 46),  // Neon Green
-                1 => Color::Rgb(102, 217, 239), // Cyan
-                2 => Color::Rgb(174, 129, 255), // Purple
-                3 => Color::Rgb(249, 38, 114),  // Pink
-                4 => Color::Rgb(253, 151, 31),  // Orange
-                _ => Color::Rgb(117, 113, 94),  // Gray
-            };
-            hero_spans.push(Line::from(Span::styled(*line, Style::default().fg(color))));
-        }
-
-        let hero_para = Paragraph::new(hero_spans)
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Double)
-                    .border_style(Style::default().fg(self.colors.border))
-                    .padding(Padding::new(2, 2, 2, 2)),
-            );
-        frame.render_widget(hero_para, layout[0]);
-
-        // Right: Info blocks
+        // Build info text (shared between logo and no-logo modes)
         let mut info_text = Vec::new();
 
         // Version header
@@ -962,9 +919,75 @@ impl ChatComponent {
             Style::default().fg(Color::Rgb(117, 113, 94)).italic(),
         )]));
 
-        let info_para =
-            Paragraph::new(info_text).block(Block::default().padding(Padding::new(4, 0, 0, 0)));
-        frame.render_widget(info_para, layout[1]);
+        if self.show_logo_on_empty {
+            // Layout for landing page: Left (ASCII), Right (Info)
+            let layout = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints([
+                    ratatui::layout::Constraint::Length(50), // Fixed width for ASCII art
+                    ratatui::layout::Constraint::Min(1),     // Remaining space for info
+                ])
+                .split(inner_area);
+
+            // Left: ASCII Art
+            let hero_lines = [
+                "⣴⣶⣤⡤⠦⣤⣀⣤⠆     ⣈⣭⣿⣶⣿⣦⣼⣆",
+                " ⠉⠻⢿⣿⠿⣿⣿⣶⣦⠤⠄⡠⢾⣿⣿⡿⠋⠉⠉⠻⣿⣿⡛⣦",
+                "      ⠈⢿⣿⣟⠦ ⣾⣿⣿⣷    ⠻⠿⢿⣿⣧⣄",
+                "       ⣸⣿⣿⢧ ⢻⠻⣿⣿⣷⣄⣀⠄⠢⣀⡀⠈⠙⠿⠄",
+                "      ⢠⣿⣿⣿⠈    ⣻⣿⣿⣿⣿⣿⣿⣿⣛⣳⣤⣀⣀",
+                " ⢠⣧⣶⣥⡤⣄ ⣸⣿⣿⠘  ⢀⣴⣿⣿⡿⠛⣿⣿⣧⠈⢿⠿⠟⠛⠻⠿⠄",
+                "⣰⣿⣿⠛⠻⣿⣿⡦⢹⣿⣷   ⢊⣿⣿⡏  ⢸⣿⣿⡇ ⢀⣠⣄⣾⠄",
+                " ⣠⣿⠿⠛ ⢀⣿⣿⣷⠘⢿⣿⣦⡀ ⢸⢿⣿⣿⣄ ⣸⣿⣿⡇⣪⣿⡿⠿⣿⣷⡄",
+                " ⠙⠃   ⣼⣿⡟  ⠈⠻⣿⣿⣦⣌⡇⠻⣿⣿⣷⣿⣿⣿ ⣿⣿⡇ ⠛⠻⢷⣄",
+                "    ⢻⣿⣿⣄   ⠈⠻⣿⣿⣿⣷⣿⣿⣿⣿⣿⡟ ⠫⢿⣿⡆",
+                "     ⠻⣿⣿⣿⣿⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⡟⢀⣀⣤⣾⡿⠃",
+                " from the abyss",
+            ];
+
+            let mut hero_spans = Vec::new();
+
+            // Simple time-based animation offset
+            let time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as usize;
+            let offset = (time / 100) % 6;
+
+            for (i, line) in hero_lines.iter().enumerate() {
+                let color_idx = (i + offset) % 6;
+                let color = match color_idx {
+                    0 => Color::Rgb(166, 226, 46),
+                    1 => Color::Rgb(102, 217, 239),
+                    2 => Color::Rgb(174, 129, 255),
+                    3 => Color::Rgb(249, 38, 114),
+                    4 => Color::Rgb(253, 151, 31),
+                    _ => Color::Rgb(117, 113, 94),
+                };
+                hero_spans.push(Line::from(Span::styled(*line, Style::default().fg(color))));
+            }
+
+            let hero_para = Paragraph::new(hero_spans)
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Double)
+                        .border_style(Style::default().fg(self.colors.border))
+                        .padding(Padding::new(2, 2, 2, 2)),
+                );
+            frame.render_widget(hero_para, layout[0]);
+
+            // Info panel on the right
+            let info_para =
+                Paragraph::new(info_text).block(Block::default().padding(Padding::new(4, 0, 0, 0)));
+            frame.render_widget(info_para, layout[1]);
+        } else {
+            // No logo — just show the info panel using the full area
+            let info_para =
+                Paragraph::new(info_text).block(Block::default().padding(Padding::new(2, 0, 0, 0)));
+            frame.render_widget(info_para, inner_area);
+        }
     }
 }
 

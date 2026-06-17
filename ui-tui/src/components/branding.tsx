@@ -28,11 +28,13 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
 }
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
+  const w = artWidth(lines)
+
   return (
-    <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
+    <Box flexDirection="column" height={lines.length} opaque width={w}>
       {lines.map(([c, text], i) => (
         <Text color={c} key={i} wrap="truncate-end">
-          {text}
+          {text.padEnd(w)}
         </Text>
       ))}
     </Box>

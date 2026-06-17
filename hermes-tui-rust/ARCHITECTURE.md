@@ -2,61 +2,75 @@
 
 ## Overview
 
-This document describes the architecture for a Rust-based TUI for Hermes Agent, inspired by the interface of oh-my-pi.
+This document describes the architecture for a Rust-based TUI for Hermes Agent, inspired by the interface of oh-my-pi. The design follows an **Asynchronous Event-Driven Component Architecture** with four primary layers: the Event/Action Bus, the Central App Engine, the Hierarchical Component Tree, and the Async I/O Worker Pool. This architecture has been refined through a comprehensive architectural critique (see References) to address critical concerns around bounded channels, immutable rendering, demand-driven updates, and biased event prioritisation.
 
 ## Goals
 
 1. **Shell-like command interface** - Terminal shell with command execution
-2. **Rich chat transcript display** - Formatted chat messages with syntax highlighting
+2. **Rich chat transcript display** - Formatted chat messages with syntax highlighting, chat bubbles (oatmeal-style)
 3. **Multi-line text input** - Composer with multi-line editing support
-4. **Customizable themes** - Color schemes and UI styling
+4. **Customizable themes** - Color schemes and UI styling (24-bit TrueColor, Tailwind palette)
 5. **stdio JSON-RPC communication** - Communication with Hermes gateway
 6. **ratatui-based** - Using the mature ratatui library
+7. **Embedded modal editor** - Vim-inspired editor backed by Rope data structure
+8. **Multi-agent orchestration** - Resizable split panes for sub-agent telemetry
+9. **60-FPS animation with demand-driven rendering** - Smooth, tear-free transitions using tachyonfx shaders
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Hermes TUI Rust (Binary)                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐  │
-│  │      App         │  │    Protocol      │  │    State     │  │
-│  │  (main.rs)       │  │   (mod.rs)       │  │   (mod.rs)    │  │
-│  └────────┬────────┘  └────────┬────────┘  └──────┬──────┘  │
-│           │                   │                    │           │
-│           ▼                   ▼                    ▼           │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                    Event Loop (app.rs)                      ││
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐   ││
-│  │  │   Handlers  │  │    UI       │  │   Transport       │   ││
-│  │  │ (mod.rs)    │  │  (mod.rs)    │  │   (transport.rs)  │   ││
-│  │  └──────┬──────┘  └──────┬──────┘  └───────┬────────┘   ││
-│  │         │                │                 │            ││
-│  │         ▼                ▼                 ▼            ││
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   ││
-│  │  │   keys.rs   │  │  chat.rs     │  │   JSON-RPC   │   ││
-│  │  └─────────────┘  └──────┬──────┘  └─────────────┘   ││
-│  │                           │                          ││
-│  │                           ▼                          ││
-│  │                    ┌─────────────────┐               ││
-│  │                    │  composer.rs     │               ││
-│  │                    │  toolbar.rs      │               ││
-│  │                    │  prompts.rs      │               ││
-│  │                    │  cards.rs        │               ││
-│  │                    └─────────────────┘               ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                    stdio (Python Gateway)                  ││
-│  │  JSON-RPC messages ←───────────────────────► Rust TUI     ││
-│  └─────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
-                         ↓
-              ┌─────────────────────┐
-              │   Hermes Core        │
-              │   (run_agent.py)     │
-              └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                    Hermes TUI Rust (Binary)                            │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────┐      │
+│  │               Event / Action Bus (tokio)                      │      │
+│  │  Bounded channels (capacity 1024) + Watch channels        │      │
+│  │  Biased tokio::select! — user input > ticks > background    │      │
+│  └──────────┬────────────────────────────────────────────────┘      │
+│             │                                                       │
+│  ┌──────────▼────────────────────────────────────────────────┐      │
+│  │              Central App Engine                               │      │
+│  │  - AppState (immutable refs to components)                     │      │
+│  │  - Focus state machine (DashboardMode / EditorMode / ...)      │      │
+│  │  - Active animation counter → demand-driven ticker              │      │
+│  └──────────┬────────────────────────────────────────────────┘      │
+│             │                                                       │
+│  ┌──────────▼────────────────────────────────────────────────┐      │
+│  │            Hierarchical Component Tree                        │      │
+│  │  - WidgetRef / StatefulWidget (immutable render)               │      │
+│  │  - Chat (oatmeal-style bubbles, tachyonfx fade-in)              │      │
+│  │  - Composer (multi-line, Tab completion)                        │      │
+│  │  - Editor (Rope-backed, edtui, syntax cache)                    │      │
+│  │  - Memory explorer (tree view, async fetch)                     │      │
+│  │  - Sub-agent panes (resizable splits)                           │      │
+│  │  - Toolbar, Prompts, Cards                                      │      │
+│  └─────────────────────────────────────────────────────────────┘      │
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────┐      │
+│  │              Async I/O Worker Pool (Tokio)                      │      │
+│  │  - JSON-RPC IPC to Hermes Python daemon                         │      │
+│  │  - LLM streaming deserialisation → immutable Action enum        │      │
+│  │  - SQLite blocking thread for memory fetches                     │      │
+│  │  - Sub-agent telemetry routing                                   │      │
+│  └──────────┬────────────────────────────────────────────────┘      │
+│             │                                                       │
+│  ┌──────────▼────────────────────────────────────────────────┐      │
+│  │              Synchronised Output (DEC ?2026)                    │      │
+│  │  - Atomic frame swap to eliminate terminal tearing               │      │
+│  │  - Ratatui cell diffing + ANSI escape sequence emission          │      │
+│  └─────────────────────────────────────────────────────────────┘      │
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────┐      │
+│  │                    stdio (Python Gateway)                       │      │
+│  │  JSON-RPC messages ←───────────────────────────► Rust TUI        │      │
+│  └──────────────────────────────────────────────────────────┘      │
+└──────────────────────────────────────────────────────────────────┘
+                              ↓
+                   ┌─────────────────────┐
+                   │   Hermes Core        │
+                   │   (run_agent.py)     │
+                   └─────────────────────┘
 ```
 
 ## Module Structure
@@ -68,7 +82,12 @@ hermes-tui-rust/
 ├── src/
 │   ├── main.rs                   # Binary entry point
 │   ├── lib.rs                    # Library entry point
-│   ├── app.rs                    # Main App struct and event loop
+│   ├── app.rs                    # Main App struct, event loop, biased select
+│   ├── bus/
+│   │   ├── mod.rs                # Event/Action bus module
+│   │   ├── action.rs             # Action enum and channel definitions
+│   │   ├── dispatcher.rs         # Central dispatcher with biased polling
+│   │   └── animation.rs          # Animation ticker with demand-driven control
 │   ├── protocol/
 │   │   ├── mod.rs                # Protocol module exports
 │   │   ├── types.rs              # JSON-RPC message types
@@ -78,17 +97,21 @@ hermes-tui-rust/
 │   │   ├── mod.rs                # State module exports
 │   │   ├── session.rs            # Session management
 │   │   ├── messages.rs           # Message history and management
-│   │   └── config.rs             # TUI configuration and themes
+│   │   ├── config.rs             # TUI configuration and themes
+│   │   └── focus.rs              # Focus state machine (modes → component routing)
 │   ├── ui/
 │   │   ├── mod.rs                # UI module exports
-│   │   ├── chat.rs               # Chat transcript display
+│   │   ├── chat.rs               # Chat transcript display (oatmeal-style bubbles)
 │   │   ├── composer.rs           # Multi-line text input
+│   │   ├── editor.rs             # Embedded modal editor (Rope-backed, edtui)
+│   │   ├── memory_explorer.rs    # Memory tree view (async SQLite fetch)
+│   │   ├── agent_panes.rs        # Sub-agent resizable split panes
 │   │   ├── toolbar.rs            # Status toolbar
 │   │   ├── prompts.rs            # User prompt dialogs
 │   │   └── cards.rs              # UI card components
 │   ├── handlers/
 │   │   ├── mod.rs                # Handler module exports
-│   │   ├── keys.rs               # Keyboard event handling
+│   │   ├── keys.rs               # Keyboard event handling (hierarchical input maps)
 │   │   ├── mouse.rs              # Mouse event handling
 │   │   └── input.rs              # Text input handling
 │   └── utils/
@@ -105,37 +128,124 @@ hermes-tui-rust/
 
 ## Component Details
 
-### 1. App Module (app.rs)
+### 1. Event/Action Bus (bus/)
+
+The central nervous system of the TUI. All communication between layers is mediated by bounded Tokio channels to enforce backpressure and prevent memory exhaustion.
+
+```rust
+/// Central action enum — every state change in the system
+pub enum Action {
+    // Hardware input
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    Resize(u16, u16),
+    Paste(String),
+
+    // Animation
+    Tick(Duration),  // only emitted when animations are active
+
+    // Protocol responses (from Hermes gateway)
+    MessageDelta { content: String, message_id: String },
+    MessageComplete { message: Message, message_id: String },
+    ToolStart { tool_name: String, tool_id: String },
+    ToolProgress { tool_id: String, output: String },
+    ToolComplete { tool_id: String, result: String },
+    GatewayReady { capabilities: Capabilities },
+    Error { error: String, code: i32 },
+
+    // Session
+    SessionList { sessions: Vec<SessionInfo> },
+    SessionSwitched { session_id: String },
+
+    // Approvals
+    ApprovalRequest { request_id: String, prompt: String },
+
+    // Internal
+    ActiveAnimationCount(u32),  // 0 → suspend ticker
+    SetMode(InputMode),
+    FocusComponent(ComponentId),
+    Quit,
+}
+
+/// Channel capacity — MUST be bounded to prevent OOM
+const ACTION_BUS_CAPACITY: usize = 1024;
+
+/// High-priority channel for user input (smaller, never drops keystrokes)
+const INPUT_CHANNEL_CAPACITY: usize = 64;
+```
+
+**Critical design rule**: All event bus channels use `tokio::sync::mpsc::channel` (bounded), never `UnboundedSender`. Bounded channels enforce backpressure: when capacity is reached, senders suspend until the receiver drains a message. This prevents unbounded memory growth during rendering stalls or massive LLM token floods.
+
+**Watch channels** (`tokio::sync::watch`) are used for metrics that only need the latest state — progress bars, CPU/RAM telemetry, agent status indicators — eliminating queue buildup entirely for these values.
+
+#### Dispatcher (dispatcher.rs)
+
+The central dispatcher runs a biased `tokio::select!` loop that polls channels in strict priority order:
+
+```rust
+// Biased polling — hardware input always first
+tokio::select! {
+    biased;  // ← CRITICAL: enforces priority order
+
+    // 1. Hardware input (highest priority)
+    Some(event) = input_receiver.recv() => {
+        handle_input(event).await;
+    }
+
+    // 2. Animation ticks (only active when animations are running)
+    Some(tick) = animation_receiver.recv() => {
+        handle_tick(tick).await;
+    }
+
+    // 3. Internal state mutations
+    Some(action) = internal_receiver.recv() => {
+        handle_internal(action).await;
+    }
+
+    // 4. Background Hermes data (lowest priority)
+    Some(response) = gateway_receiver.recv() => {
+        handle_gateway(response).await;
+    }
+}
+```
+
+This mirrors the browser event-loop prioritisation model (microtasks before macrotasks), ensuring that user keystrokes and rendering ticks are never starved by high-throughput LLM streaming.
+
+### 2. App Module (app.rs)
 
 The main application struct that orchestrates everything:
 
 ```rust
 pub struct App {
-    /// Protocol client for gateway communication
-    client: ProtocolClient,
-    /// Application state
+    /// Dispatchers and channel transmitters
+    dispatcher: Dispatcher,
+    /// Bound senders for each channel priority tier
+    input_tx: mpsc::Sender<Action>,
+    gateway_tx: mpsc::Sender<Action>,
+    /// Application state (passed immutably to components)
     state: AppState,
     /// Terminal interface
     terminal: Terminal<CrosstermBackend<std::io::Stderr>>,
-    /// Event stream
-    events: EventStream,
+    /// Animation ticker (suspended when no animations active)
+    animator: AnimationController,
 }
 
 impl App {
     pub fn new() -> Result<Self>;
     pub fn run(&mut self) -> Result<()>;
-    pub fn handle_event(&mut self, event: Event) -> Result<()>;
+    pub fn handle_action(&mut self, action: Action) -> Result<()>;
     pub fn draw(&mut self) -> Result<()>;
 }
 ```
 
 **Responsibilities:**
-- Initialize all components
-- Main event loop
+- Initialize all components and channels
+- Main biased-select event loop
 - Coordinate between UI, state, and protocol
+- Drive demand-controlled animation
 - Graceful shutdown
 
-### 2. Protocol Module
+### 3. Protocol Module
 
 Handles communication with the Hermes gateway via JSON-RPC over stdio.
 
@@ -216,7 +326,7 @@ impl StdioTransport {
     pub fn new() -> Self;
     pub fn read_message(&mut self) -> Result<TuiResponse>;
     pub fn write_message(&mut self, message: &TuiRequest) -> Result<()>;
-    pub fn start_reader_thread(&mut self, sender: Sender<TuiResponse>) 
+    pub fn start_reader_thread(&mut self, sender: Sender<TuiResponse>)
         -> thread::JoinHandle<()>;
 }
 ```
@@ -254,9 +364,9 @@ impl ProtocolClient {
 - Handle connection state
 - Provide async-friendly interface
 
-### 3. State Module
+### 4. State Module
 
-Manages all application state.
+Manages all application state. The Central App Engine holds a single source of truth for global state; it does NOT own the layout tree. Focus routing and layout are handled via a declarative state machine, not hardcoded coordinates.
 
 #### Session (session.rs)
 
@@ -314,6 +424,32 @@ impl MessageHistory {
 }
 ```
 
+#### Focus (focus.rs)
+
+Declarative focus state machine:
+
+```rust
+pub enum AppMode {
+    /// Main chat interface — keyboard navigates history, composer focused
+    DashboardMode,
+    /// Embedded editor active — keystrokes routed to editor component
+    EditorMode,
+    /// Multi-agent monitoring — splits are active
+    AgentChatMode,
+    /// Prompt overlay — choices / confirmation
+    PromptMode,
+}
+
+impl AppMode {
+    /// Determine which component receives raw key events
+    pub fn focus_target(&self) -> ComponentId;
+    /// Whether global keybindings are suspended
+    pub fn traps_input(&self) -> bool;
+}
+```
+
+When the embedded editor enters Insert or Visual modes (`EditorMode`), the central dispatcher suspends global keybinding resolution and pipes all `KeyEvent` payloads directly to the focused editor component. This prevents global hotkeys from triggering while typing code.
+
 #### Config (config.rs)
 
 TUI configuration and themes:
@@ -366,13 +502,13 @@ impl BuiltinTheme {
 }
 ```
 
-### 4. UI Module
+### 5. UI Module
 
-All UI components using ratatui.
+All UI components using ratatui. **CRITICAL**: rendering must use immutable references (`WidgetRef` trait) or `StatefulWidget` pattern — the `draw` method MUST NOT take `&mut self`. State mutation is handled during the update phase; rendering is strictly read-only, which satisfies the Rust borrow checker and enables aggressive widget caching.
 
 #### Chat (chat.rs)
 
-Chat transcript display:
+Chat transcript display with oatmeal-style chat bubbles:
 
 ```rust
 pub struct ChatWidget<'a> {
@@ -387,21 +523,21 @@ impl<'a> ChatWidget<'a> {
     pub fn scroll_up(&mut self);
     pub fn scroll_down(&mut self);
     pub fn scroll_to_bottom(&mut self);
-    pub fn render(&self, frame: &mut Frame) -> Result<()>;
 }
 
-impl<'a> Widget for ChatWidget<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut State);
+// Immutable rendering via WidgetRef
+impl<'a> WidgetRef for ChatWidget<'a> {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer);
 }
 ```
 
 **Features:**
+- Oatmeal-style chat bubbles: user messages right-aligned, assistant messages left-aligned
+- `tachyonfx` fade-in for streaming tokens (`fx::fade_to_fg` or `fx::coalesce`)
 - Scrollable message history
 - Syntax highlighting for code blocks
 - Message formatting (markdown support)
-- Timestamps
-- Author indicators
-- Tool call display
+- Tool call display with progress indicators
 
 #### Composer (composer.rs)
 
@@ -440,6 +576,87 @@ pub enum ComposerAction {
 - Syntax highlighting (as you type)
 - Auto-indentation
 - Tab completion
+
+#### Editor (editor.rs)
+
+Embedded modal editor, powered by `edtui` with Rope backing:
+
+```rust
+pub struct EditorWidget {
+    /// Rope-based text buffer for O(log n) insert/delete
+    buffer: ropey::Rope,
+    /// Cached syntax-highlighted lines (invalidated only on mutation)
+    syntax_cache: Vec<Vec<Span>>,
+    /// Visible viewport bounds
+    viewport: Range<usize>,
+    mode: EditorMode,
+}
+
+pub enum EditorMode {
+    Normal,
+    Insert,
+    Visual,
+}
+
+impl EditorWidget {
+    pub fn new() -> Self;
+    pub fn load_buffer(&mut self, text: &str);
+    pub fn handle_key(&mut self, key: KeyEvent) -> Result<EditorAction>;
+    pub fn render(&self, area: Rect, buf: &mut Buffer);
+}
+```
+
+**Critical design rules:**
+1. **Rope data structure**: Uses `ropey` crate instead of `String` or `Vec<String>`. A Rope organises text into a balanced tree of string slices, enabling logarithmic time complexity for insertions, deletions, and line lookups regardless of file size (the same architecture underpinning the Helix editor).
+2. **Virtual viewports**: Only the subset of lines visible within the physical terminal area are processed every frame — the rest of the document is never touched during rendering.
+3. **Syntax caching**: Highlighted span structures are cached. Only lines explicitly altered by user input or LLM generation are invalidated. On rapid scrolling, rendering is reduced to a memory copy of cached spans.
+4. **Input trapping**: When in Insert or Visual modes, the central dispatcher routes all key events to the editor, suspending global keybindings.
+
+#### Memory Explorer (memory_explorer.rs)
+
+Tree view for Hermes' persistent memory system:
+
+```rust
+pub struct MemoryExplorer {
+    /// Async-loaded index tree
+    tree: TreeState,
+    /// Loading state for non-blocking fetch
+    loading: bool,
+}
+
+impl MemoryExplorer {
+    pub fn new() -> Self;
+    /// Dispatches a fetch action via the Action Bus
+    pub fn request_fetch(&self, path: &str);
+    /// Called when the background pool responds with loaded data
+    pub fn on_data_loaded(&mut self, entries: Vec<MemoryEntry>);
+}
+```
+
+Fetches sub-documents from the SQLite database via the background Tokio pool on a blocking thread. During the round-trip, the component displays a non-blocking spinner animation.
+
+#### Agent Panes (agent_panes.rs)
+
+Resizable split panes for multi-agent orchestration:
+
+```rust
+pub struct AgentPaneManager {
+    /// One pane per active sub-agent
+    panes: Vec<AgentPane>,
+    /// Current split layout
+    layout: SplitLayout,
+}
+
+pub struct AgentPane {
+    pub agent_id: String,
+    pub title: String,
+    pub output: Vec<String>,
+    pub status: AgentStatus,
+    pub telemetry: Vec<ToolEvent>,
+}
+```
+
+The central dispatcher tags incoming telemetry from the Async Worker Pool with a specific agent identifier, routing standard output streams and tool-execution statuses to the correct sub-agent viewport. This enables a mission-control interface for managing multi-agent swarms.
 
 #### Toolbar (toolbar.rs)
 
@@ -514,8 +731,8 @@ pub struct Card {
     pub padding: Padding,
 }
 
-impl Widget for Card {
-    fn render(self, area: Rect, buf: &mut Buffer);
+impl WidgetRef for Card {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer);
 }
 
 // Specialized cards
@@ -537,22 +754,29 @@ pub struct LoadingCard {
 }
 ```
 
-### 5. Handlers Module
+### 6. Handlers Module
 
 Event handling for user input.
 
 #### Keys (keys.rs)
 
-Keyboard event handling:
+Keyboard event handling with hierarchical input maps:
 
 ```rust
 pub struct KeyHandler {
     config: Keybindings,
+    /// Current focus mode (determines which keymap is active)
+    focus: ComponentId,
 }
 
 impl KeyHandler {
     pub fn new(config: Keybindings) -> Self;
-    pub fn handle(&self, key: KeyEvent, state: &mut AppState) -> Result<Action>;
+    /// Routes keystrokes based on current mode
+    /// - DashboardMode: global keybindings active
+    /// - EditorMode(Normal): editor commands active
+    /// - EditorMode(Insert): all keystrokes → editor directly
+    /// - PromptMode: only prompt navigation keys
+    pub fn handle(&self, key: KeyEvent, mode: &AppMode) -> Result<Action>;
 }
 
 pub enum Action {
@@ -568,7 +792,7 @@ pub enum Action {
     ComposerDown,
     ComposerHome,
     ComposerEnd,
-    
+
     /// Navigation actions
     ScrollUp,
     ScrollDown,
@@ -576,22 +800,29 @@ pub enum Action {
     PageDown,
     GoToTop,
     GoToBottom,
-    
+
     /// Session actions
     NewSession,
     PreviousSession,
     NextSession,
     ListSessions,
-    
+
+    /// Editor actions
+    EditorInsertMode,
+    EditorNormalMode,
+    EditorVisualMode,
+    EditorSave,
+    EditorFind,
+
     /// Command actions
     OpenCommandPalette,
-    
+
     /// System actions
     Quit,
     Suspend,
     ToggleTheme,
     ToggleHelp,
-    
+
     /// Other
     Noop,
 }
@@ -601,19 +832,22 @@ pub struct Keybindings {
     pub normal: HashMap<KeyEvent, Action>,
     pub insert: HashMap<KeyEvent, Action>,
     pub command: HashMap<KeyEvent, Action>,
+    /// Editor mode keybindings (separate from global)
+    pub editor: HashMap<KeyEvent, EditorAction>,
 }
 
 impl Default for Keybindings {
     fn default() -> Self {
         let mut normal = HashMap::new();
-        normal.insert(KeyEvent::Char('i'), Action::ComposerInsert);
+        normal.insert(KeyEvent::Char('i'), Action::EditorInsertMode);
         normal.insert(KeyEvent::Char('q'), Action::Quit);
         // ... more default bindings
-        
+
         Self {
             normal,
             insert: HashMap::new(),
             command: HashMap::new(),
+            editor: HashMap::new(),
         }
     }
 }
@@ -636,6 +870,7 @@ impl MouseHandler {
 - Click to focus composer
 - Scroll wheel for chat
 - Click on messages for actions
+- Click to switch between sub-agent panes
 
 #### Input (input.rs)
 
@@ -656,7 +891,35 @@ impl InputHandler {
 }
 ```
 
-### 6. Utils Module
+### 7. Animation System (bus/animation.rs)
+
+Demand-driven animation controller. **Never** runs a brute-force 60-FPS tick. The ticker is only active when at least one animation is registered.
+
+```rust
+pub struct AnimationController {
+    /// Atomic counter of active animations
+    active_count: Arc<AtomicU32>,
+    /// The 16ms interval ticker (runs only when count > 0)
+    ticker: Option<JoinHandle<()>>,
+}
+
+impl AnimationController {
+    pub fn new(tx: mpsc::Sender<Action>) -> Self;
+    /// Register an animation start → increments counter
+    pub fn start_animation(&mut self);
+    /// Animation resolved → decrements counter; if 0, suspends ticker
+    pub fn end_animation(&mut self);
+    /// Returns true if the 60-FPS loop is currently active
+    pub fn is_active(&self) -> bool;
+}
+```
+
+**Rendering trigger logic** (inspired by Yazi):
+- **No animations active**: Event loop blocks on user input or async I/O. Redraw only on state change.
+- **Animations active**: 16ms ticker runs. Uses time-delta progression for `tachyonfx` shader effects.
+- **Synchronised Output**: DEC mode `?2026h` / `?2026l` escape sequences wrap every render cycle, instructing the terminal to buffer draw commands and present them in an atomic frame swap — eliminating visual tearing.
+
+### 8. Utils Module
 
 Utility functions and helpers.
 
@@ -668,18 +931,21 @@ Text processing utilities:
 pub mod text {
     /// Wrap text to fit width
     pub fn wrap_text(text: &str, width: u16) -> Vec<String>;
-    
+
     /// Truncate text with ellipsis
     pub fn truncate(text: &str, max_len: usize) -> String;
-    
+
     /// Extract code blocks from markdown
     pub fn extract_code_blocks(text: &str) -> Vec<(String, String)>;
-    
+
     /// Apply syntax highlighting to code
     pub fn highlight_code(code: &str, language: &str) -> Result<String>;
-    
+
     /// Format markdown for terminal display
     pub fn format_markdown(text: &str, width: u16) -> Result<Vec<Line>>;
+
+    /// Calculate visible width accounting for multi-cell Unicode
+    pub fn unicode_display_width(text: &str) -> usize;
 }
 ```
 
@@ -691,71 +957,80 @@ ANSI code handling:
 pub mod ansi {
     /// Remove ANSI escape codes from text
     pub fn strip_ansi(text: &str) -> String;
-    
+
     /// Get text width accounting for ANSI codes
     pub fn ansi_width(text: &str) -> usize;
-    
+
     /// Truncate ANSI text
     pub fn truncate_ansi(text: &str, max_len: usize) -> String;
 }
 ```
 
-## Event Loop
+## Event Loop (app.rs)
 
-The main event loop in `app.rs`:
+The main event loop — structured around a biased `tokio::select!`:
 
 ```rust
 impl App {
-    pub fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         // Initial draw
         self.terminal.draw(|f| self.draw(f))?;
-        
-        // Main loop
+
+        // Main loop — biased select for priority
         loop {
-            // Check for events with timeout
-            if let Ok(event) = self.events.next()? {
-                if !self.handle_event(event)? {
-                    break;
+            // Render only when needed: state changed or animation active
+            if self.state.is_dirty() || self.animator.is_active() {
+                self.terminal.draw(|f| self.draw(f))?;
+                self.state.clear_dirty();
+            }
+
+            // Biased select — hardware input > ticks > background data
+            tokio::select! {
+                biased;
+
+                // Highest priority: hardware input
+                Some(event) = self.input_rx.recv() => {
+                    if !self.handle_input(event).await? {
+                        break; // Quit
+                    }
+                }
+
+                // Animation tick (only active when count > 0)
+                Some(tick) = self.anim_rx.recv() => {
+                    self.handle_tick(tick).await?;
+                }
+
+                // Gateway responses (lowest priority)
+                Some(response) = self.gateway_rx.recv() => {
+                    self.handle_gateway_response(response).await?;
+                }
+
+                // Fallback: yield if nothing ready
+                else => {
+                    tokio::task::yield_now().await;
                 }
             }
-            
-            // Check for gateway messages
-            while let Ok(Some(response)) = self.client.recv_response() {
-                self.handle_gateway_response(response)?;
-            }
-            
-            // Draw UI
-            self.terminal.draw(|f| self.draw(f))?;
-            
-            // Check for quit
-            if self.should_quit {
-                break;
-            }
         }
-        
+
         Ok(())
     }
-    
-    fn handle_event(&mut self, event: Event) -> Result<bool> {
-        match event {
-            Event::Key(key) => {
-                let action = self.key_handler.handle(key, &mut self.state)?;
-                self.handle_action(action)?;
+
+    fn handle_input(&mut self, action: Action) -> Result<bool> {
+        match action {
+            Action::Key(key) => {
+                let mode = self.state.get_mode();
+                let action = self.key_handler.handle(key, mode)?;
+                self.dispatch(action)?;
             }
-            Event::Mouse(mouse) => {
-                // Handle mouse
-            }
-            Event::Resize(w, h) => {
+            Action::Resize(w, h) => {
                 self.terminal.resize(w, h)?;
             }
-            Event::Paste(text) => {
-                // Handle paste
-            }
+            // ... mouse, paste
         }
         Ok(true)
     }
-    
-    fn handle_action(&mut self, action: Action) -> Result<()> {
+
+    fn dispatch(&mut self, action: Action) -> Result<()> {
         match action {
             Action::ComposerSubmit => {
                 let text = self.composer.submit();
@@ -763,24 +1038,44 @@ impl App {
                     self.send_prompt(text)?;
                 }
             }
+            Action::EditorInsertMode => {
+                self.state.set_mode(AppMode::EditorMode);
+                // Dispatcher suspends global keybindings
+            }
+            Action::ActiveAnimationCount(count) => {
+                // Demand-driven animation control
+                if count == 0 {
+                    self.animator.suspend();
+                }
+            }
             Action::Quit => {
-                self.should_quit = true;
+                return Ok(false);
             }
             // ... handle other actions
         }
-        Ok(())
+        Ok(true)
     }
-    
+
     fn handle_gateway_response(&mut self, response: TuiResponse) -> Result<()> {
         match response {
             TuiResponse::MessageDelta { content, message_id } => {
                 self.state.add_delta(content, message_id);
+                self.state.mark_dirty();
             }
             TuiResponse::MessageComplete { message, message_id } => {
                 self.state.complete_message(message, message_id);
             }
             TuiResponse::ApprovalRequest { request_id, prompt } => {
+                self.state.set_mode(AppMode::PromptMode);
                 self.show_approval_prompt(request_id, prompt);
+            }
+            TuiResponse::ToolStart { tool_name, tool_id } => {
+                self.state.tool_started(tool_name, tool_id);
+                self.animator.start_animation(); // activate spinner
+            }
+            TuiResponse::ToolComplete { tool_id, result } => {
+                self.state.tool_completed(tool_id, result);
+                self.animator.end_animation(); // may suspend ticker
             }
             // ... handle other responses
         }
@@ -863,7 +1158,7 @@ All messages are JSON-RPC 2.0 compliant:
 
 ## Theme System
 
-The theme system allows customization of the TUI appearance:
+The theme system allows customization of the TUI appearance. Uses **24-bit TrueColor** mode exclusively, leveraging `ratatui::style::palette::tailwind` for a cohesive, modern color scale. Backgrounds use deep SLATE hues; active agent components pulse with SKY or BLUE accents.
 
 ```rust
 pub struct Theme {
@@ -908,6 +1203,17 @@ pub fn solarized_theme() -> Theme { ... }
 pub fn dracula_theme() -> Theme { ... }
 ```
 
+## Visual Design & Kinetic Feel
+
+The TUI transcends traditional terminal aesthetic limitations with a modern, "post-terminal" visual language:
+
+- **Typography & Color**: 24-bit TrueColor using `ratatui::style::palette::tailwind`. Deep SLATE backgrounds, SKY/BLUE accents for active agent components.
+- **Layout**: `ratatui::layout::Flex` with `Flex::SpaceBetween` and `Flex::Center` for fluid, terminal-resize-adaptive layouts. Panels use `Block` with `Borders::ALL` and `BorderType::Rounded`.
+- **Chat Bubbles** (oatmeal-inspired): Messages contained in styled bubbles. User messages right-aligned via `.right_aligned()`. Assistant responses left-aligned. Streaming tokens fade in using `tachyonfx` shaders (`fx::coalesce`, `fx::fade_to_fg`).
+- **Transitions**: Panel transitions use `fx::slide_out` or `fx::dissolve(800)`. Sub-agent status indicators use `fx::evolve` to cycle through Unicode block progressions (`▁▂▃▄▅▆▇█`).
+- **Focus Management**: Modal overlays (e.g., MCP tool confirmations) dim background panels via `CellFilter` + `fx::darken_fg`, drawing the user's eye to the active overlay without heavy CPU recalculations.
+- **Editor Aesthetics**: Left gutter for line numbers (dimmed STONE color). Active line highlighted by shifting background color of the active row's `Rect`. Cursor snaps to correct Unicode character width, matching physical hardware cursor to logical Rope offset.
+
 ## Configuration
 
 Configuration files:
@@ -921,7 +1227,7 @@ Example config:
 theme: solarized
 keybindings:
   normal:
-    i: composer_insert
+    i: editor_insert_mode
     q: quit
     k: scroll_up
     j: scroll_down
@@ -934,11 +1240,20 @@ display:
   show_session_name: true
   syntax_highlighting: true
   max_message_width: 80
+  rounded_borders: true
+  chat_bubble_style: oatmeal
+
+animation:
+  fps: 60
+  demand_driven: true
+  use_synchronized_output: true
 
 editor:
   auto_indent: true
   tab_width: 4
   history_size: 100
+  rope_backed: true
+  syntax_cache_size: 500
 ```
 
 ## Error Handling
@@ -956,18 +1271,21 @@ Error handling strategy:
 pub enum TuiError {
     #[error("Connection error: {0}")]
     ConnectionError(#[from] std::io::Error),
-    
+
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
-    
+
     #[error("Protocol error: {0}")]
     ProtocolError(String),
-    
+
     #[error("State error: {0}")]
     StateError(String),
-    
+
     #[error("Render error: {0}")]
     RenderError(String),
+
+    #[error("Animation error: {0}")]
+    AnimationError(String),
 }
 
 // Result type
@@ -981,16 +1299,21 @@ pub type TuiResult<T> = Result<T, TuiError>;
 - State management operations
 - Text processing utilities
 - Theme configuration
+- Action bus channel backpressure
+- Focus state machine transitions
 
 ### Integration Tests
 - TUI ↔ Gateway message flow
 - Session management
 - Message history
+- Animation ticker activate/suspend cycle
+- Agent pane routing
 
 ### E2E Tests
 - Full interaction scenarios
-- Keybinding validation
+- Keybinding validation (modal modes)
 - UI rendering validation
+- Terminal tear-free output (DEC ?2026)
 
 ### Test Coverage Goals
 - Protocol: 100%
@@ -999,14 +1322,19 @@ pub type TuiResult<T> = Result<T, TuiError>;
 - UI: 90% (some rendering tests are hard to automate)
 - Handlers: 95%
 - App: 85%
+- Animation: 90%
 
 ## Performance Considerations
 
-1. **Message streaming**: Process delta messages immediately for smooth typing effect
-2. **Rendering optimization**: Only re-render changed areas when possible
-3. **Memory management**: Limit message history, truncate old messages
-4. **Input handling**: Non-blocking event loop for responsive UI
-5. **Syntax highlighting**: Cache highlighting results, lazy evaluation
+1. **Backpressure**: Bounded channels prevent memory exhaustion during LLM streaming or bulk memory retrieval.
+2. **Demand-driven rendering**: 60-FPS ticker suspended when animations resolve — idle CPU consumption near zero.
+3. **Synchronised Output**: DEC ?2026 eliminates visual tearing, enabling atomic frame swaps at high frame rates.
+4. **Style-only animations**: Animations operate primarily on style modifiers (fading colours, altering alpha) rather than changing underlying text graphemes — accelerates the Ratatui diff process.
+5. **Virtual viewports**: Editor and chat only process visible line subsets.
+6. **Syntax caching**: Cached highlighted spans; only mutated lines invalidated.
+7. **Message streaming**: Delta messages processed immediately for smooth typing effect.
+8. **Memory management**: Limit message history, truncate old messages.
+9. **Input handling**: Non-blocking event loop for responsive UI.
 
 ## Security Considerations
 
@@ -1014,11 +1342,13 @@ pub type TuiResult<T> = Result<T, TuiError>;
 2. **Output sanitization**: Sanitize all text before display (remove harmful ANSI codes)
 3. **Sensitive data**: Don't log sensitive user input
 4. **Command execution**: Validate slash commands before executing
+5. **Editor sandbox**: Prevent arbitrary file writes from LLM-generated editor commands
 
 ## Compatibility
 
 - **Platforms**: Linux, macOS, Windows (via crossterm)
-- **Terminals**: Any terminal supporting ANSI escape codes
+- **Terminals**: Any terminal supporting ANSI escape codes and 24-bit TrueColor
+- **Synchronised Output**: Requires terminal that supports DEC mode ?2026 (kitty, Alacritty, WezTerm, iTerm2, Windows Terminal)
 - **Minimum Rust version**: 1.75 (as specified in Cargo.toml)
 
 ## Future Enhancements
@@ -1030,16 +1360,18 @@ pub type TuiResult<T> = Result<T, TuiError>;
 5. **Custom keybindings**: User-defined keybindings
 6. **Theme editor**: Interactive theme customization
 7. **Performance metrics**: Show token usage, response times
+8. **Hermes skill browser**: Browse and activate skills from within TUI
+9. **Cron job monitor**: Visual dashboard for scheduled automations
 
 ## Migration Path
 
 The Rust TUI will coexist with the existing TypeScript TUI initially:
 
-1. **Phase 1**: Basic functionality (chat, composer, sessions)
-2. **Phase 2**: Feature parity with TypeScript TUI
-3. **Phase 3**: Enhanced features (themes, plugins)
-4. **Phase 4**: Performance optimization
-5. **Phase 5**: Optional replacement or alternative
+1. **Phase 1**: Foundation — bounded channels, biased select, basic event loop (inspired by Yazi)
+2. **Phase 2**: UI Engine — WidgetRef/StatefulWidget, ratatui-interact panes, synchronised output (DEC ?2026)
+3. **Phase 3**: Conversational Interface — chat bubbles (oatmeal-style), streaming LLM display, slash commands
+4. **Phase 4**: Embedded Modal Editor — Rope-backed edtui, syntax caching, input trapping
+5. **Phase 5**: Multi-Agent — resizable split panes, memory explorer, telemetry routing
 
 The existing TypeScript TUI will remain available via `--tui` flag.
 The Rust TUI will be available via `--tui-rust` flag initially.
@@ -1103,7 +1435,9 @@ cargo doc --open
 - Use `thiserror` for library error types
 - Prefer immutable patterns where possible
 - Use `Arc<Mutex<T>>` for shared state (consider `Arc<RwLock<T>>` for read-heavy)
-- Use `tokio::sync` types when in async context
+- Use `tokio::sync::mpsc::channel` (bounded) for event buses
+- Use `tokio::sync::watch` for latest-value-only metrics
+- Use `tokio::select!` with `biased` for priority scheduling
 
 ## Dependencies
 
@@ -1129,6 +1463,11 @@ Current dependencies (from Cargo.toml):
 - `textwrap` 0.16 - Text wrapping
 - `unicode-width` 0.1 - Unicode width calculation
 - `arboard` 3.0 (optional) - Clipboard support
+- `ropey` 1.6 - Rope data structure for editor
+- `tachyonfx` 0.4 - Terminal shader effects
+- `ratatui-interact` 0.3 - Managed split panes, tree views
+- `edtui` 0.4 - Vim-inspired embedded editor widget
+- `ratatui::widgets::Tree` - Tree widget for memory explorer
 
 ## Integration with Hermes
 
@@ -1138,7 +1477,8 @@ The Rust TUI will integrate with Hermes in the following ways:
 2. **Protocol compatibility**: Must support all message types that the TypeScript TUI supports
 3. **Configuration**: Reads from `~/.hermes/config.yaml` (shared with Hermes)
 4. **Themes**: Can use Hermes skin system or its own theme system
-5. **Plugins**: Can potentially use Hermes plugin system
+5. **Memory explorer**: Fetches Hermes memory index from SQLite via background blocking thread
+6. **Sub-agent telemetry**: Routes parallel sub-agent output to resizable split panes
 
 ### Protocol Compatibility
 
@@ -1157,57 +1497,66 @@ Key message categories:
 
 ## Implementation Roadmap
 
-### Phase 1: Foundation (Week 1)
+### Phase 1: Foundation — Event Bus & Async Core (Inspired by Yazi)
 - [ ] Project setup and Cargo.toml
-- [ ] Basic App struct and event loop
+- [ ] Bounded channel event bus (capacity 1024 + 64 input priority)
+- [ ] Biased `tokio::select!` dispatcher
 - [ ] stdio transport implementation
 - [ ] Protocol message types
+- [ ] Basic App struct and event loop
 - [ ] Basic state management
 - [ ] Simple chat display
 - [ ] Basic text input
 
-### Phase 2: Core Features (Week 2)
-- [ ] Session management
-- [ ] Message history
-- [ ] Scrollable chat
-- [ ] Multi-line composer
-- [ ] Toolbar with status
-- [ ] Keyboard navigation
+### Phase 2: UI Engine — StatefulWidget & Synchronised Output
+- [ ] Refactor all widgets to `WidgetRef` / `StatefulWidget` (immutable render)
+- [ ] Declarative focus state machine (`AppMode`)
+- [ ] Demand-driven animation controller
+- [ ] DEC ?2026 synchronised output for tear-free rendering
+- [ ] ratatui-interact managed split panes
+- [ ] Theme system (24-bit TrueColor, Tailwind palette)
+- [ ] `tachyonfx` shader integration
 - [ ] Mouse support
 
-### Phase 3: Enhanced Features (Week 3)
-- [ ] Syntax highlighting
-- [ ] Theme system
-- [ ] Command palette
-- [ ] Approval prompts
-- [ ] Completions
+### Phase 3: Conversational Interface (Inspired by Oatmeal)
+- [ ] Chat bubble widgets (user right-aligned, assistant left-aligned)
+- [ ] Streaming LLM token display with `tachyonfx` fade-in
+- [ ] Multi-line composer with history
+- [ ] Message rendering with markdown + syntax highlighting
+- [ ] Scrollable chat history
 - [ ] Slash commands
-- [ ] Tool execution display
+- [ ] Completions (`tab` + `fuzzy-matcher`)
+- [ ] Approval prompts
 
-### Phase 4: Polish (Week 4)
-- [ ] Error handling
-- [ ] Performance optimization
-- [ ] Configuration system
-- [ ] Documentation
-- [ ] Testing
-- [ ] CI/CD integration
+### Phase 4: Embedded Modal Editor (Inspired by Edtui / Helix)
+- [ ] Rope-backed text buffer (`ropey` crate)
+- [ ] edtui integration for Vim modal editing
+- [ ] Virtual viewport (only process visible lines)
+- [ ] Syntax highlighting cache (only invalidate mutated lines)
+- [ ] Input trapping (suspend global keybindings in Insert/Visual modes)
+- [ ] Native cursor synchronisation with Unicode width awareness
+- [ ] Left gutter for line numbers
 
-### Phase 5: Integration (Week 5)
+### Phase 5: Multi-Agent & Memory (Hermes-Specific)
+- [ ] Memory explorer component (tree view, async SQLite fetch)
+- [ ] Resizable split panes for sub-agent telemetry
+- [ ] Agent status indicators with `tachyonfx` effects
+- [ ] Tool execution display with progress bars
+- [ ] Cron job monitor dashboard
 - [ ] Integration with Hermes gateway
 - [ ] End-to-end testing
 - [ ] User testing
-- [ ] Bug fixes
 - [ ] Final polish
 
 ## Success Criteria
 
 1. **Functional**: All core features work correctly
-2. **Reliable**: No crashes, graceful error handling
-3. **Responsive**: Smooth UI, no lag
+2. **Reliable**: No crashes, graceful error handling, OOM-safe bounded channels
+3. **Responsive**: Smooth UI, no lag, biased polling prevents input starvation
 4. **Compatible**: Works with all Hermes gateway features
-5. **Tested**: Comprehensive test coverage
+5. **Tested**: Comprehensive test coverage including backpressure tests
 6. **Documented**: Clear documentation and comments
-7. **Maintainable**: Clean code, good architecture
+7. **Maintainable**: Clean code, good architecture, immutable rendering
 
 ## References
 
@@ -1216,3 +1565,9 @@ Key message categories:
 - [Hermes TypeScript TUI](ui-tui/)
 - [Hermes gateway protocol](tui_gateway/)
 - [oh-my-pi repository](https://github.com/can1357/oh-my-pi)
+- [Yazi — blazing-fast async terminal file manager](https://github.com/sxyazi/yazi) (inspiration for bounded channels, biased select)
+- [Oatmeal — TUI chat application for LLMs](https://github.com/oatmeal) (inspiration for chat bubbles, conversational interface)
+- [Edtui — Vim-inspired editor widget for Ratatui](https://github.com/edtui) (embedded modal editor)
+- [Helix — modal terminal editor with Rope backing](https://helix-editor.com/) (Rope architecture reference)
+- [Tachyonfx — terminal shader effects library](https://github.com/tachyonfx) (animations, transitions, fade effects)
+- [Gemini Architectural Critique — Asynchronous Event-Driven Component TUI for Hermes Agent](https://gemini.google.com/share/15062374214a) (source of the technical mandates incorporated in this document)
