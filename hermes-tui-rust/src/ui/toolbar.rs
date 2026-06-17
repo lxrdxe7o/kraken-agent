@@ -50,6 +50,8 @@ pub struct Toolbar {
     spinner_idx: usize,
     /// Current thinking verb index
     verb_idx: usize,
+    /// Whether tmux-style prefix mode is active
+    prefix_mode: bool,
 }
 
 impl Toolbar {
@@ -64,6 +66,7 @@ impl Toolbar {
             is_thinking: false,
             spinner_idx: 0,
             verb_idx: 0,
+            prefix_mode: false,
         }
     }
 
@@ -103,6 +106,16 @@ impl Toolbar {
         self.input_mode = mode;
     }
 
+    /// Set prefix mode state for the toolbar indicator
+    pub fn set_prefix_mode(&mut self, active: bool) {
+        self.prefix_mode = active;
+    }
+
+    /// Set the currently focused pane (used for animated borders)
+    pub fn set_focus_pane(&mut self, _pane: crate::state::config::FocusPane) {
+        // Focus pane state is tracked in App; the toolbar doesn't need it
+    }
+
     /// Set the theme colors
     pub fn set_theme_colors(&mut self, colors: ThemeColorsRgb) {
         self.theme_colors = colors;
@@ -135,11 +148,6 @@ impl Toolbar {
     #[must_use]
     pub fn input_mode(&self) -> InputMode {
         self.input_mode
-    }
-
-    /// Set the currently focused pane (used for animated borders)
-    pub fn set_focus_pane(&mut self, _pane: crate::state::config::FocusPane) {
-        // Focus pane state is tracked in App; the toolbar doesn't need it
     }
 
     /// Update thinking status and increment spinner
@@ -207,6 +215,14 @@ impl Toolbar {
         let connected = self.items.iter().any(|i| i.text == "●");
         let dot_color = if connected { accent_green } else { accent_red };
         spans.push(Span::styled("●", Style::default().fg(dot_color).bold()));
+
+        // 2. Prefix mode indicator
+        if self.prefix_mode {
+            spans.push(Span::styled(
+                " [PREFIX] ",
+                Style::default().fg(self.theme_colors.warning).bold(),
+            ));
+        }
 
         // 2. Thinking indicator (if active)
         if self.is_thinking {

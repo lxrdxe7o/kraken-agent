@@ -145,6 +145,8 @@ pub struct App {
     last_completion_query: Option<String>,
     /// Whether the keybinding help overlay is visible
     show_help: bool,
+    /// Whether we are in tmux-style prefix mode (Alt+A then a command key)
+    prefix_mode: bool,
 }
 
 impl App {
@@ -225,6 +227,7 @@ impl App {
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
             show_help: false,
+            prefix_mode: false,
         })
     }
 
@@ -646,6 +649,8 @@ impl App {
 
             // Update toolbar animation
             self.toolbar.tick(self.thinking);
+            // Sync prefix mode state to the toolbar indicator
+            self.toolbar.set_prefix_mode(self.prefix_mode);
 
             // Advance or stop the sine-wave loading footer (Phase 4)
             if self.thinking {
@@ -767,38 +772,124 @@ impl App {
             return Ok(());
         }
 
-        // Help screen toggle — works in any mode
-        if key.code == KeyCode::Char('?') {
-            self.show_help = !self.show_help;
+        // Tmux-style prefix key: Alt+A enters prefix mode, then a command key follows
+        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
+            self.prefix_mode = true;
             return Ok(());
         }
-        // If help is shown, Esc closes it
+
+        // Prefix mode: interpret the next key as a tmux command (one-shot, then exits)
+        if self.prefix_mode {
+            self.prefix_mode = false;
+            match key.code {
+                KeyCode::Esc => {} // cancel prefix, do nothing
+                KeyCode::Char('?') => {
+                    self.show_help = !self.show_help;
+                }
+                KeyCode::Char('1') => {
+                    self.current_view = ViewState::Dashboard;
+                }
+                KeyCode::Char('2') => {
+                    self.current_view = ViewState::Ide;
+                }
+                KeyCode::Char('3') => {
+                    self.current_view = ViewState::Kanban;
+                }
+                KeyCode::Char('4') => {
+                    self.current_view = ViewState::Chat;
+                }
+                // Tmux-style pane navigation: h/j/k/l
+                KeyCode::Char('h') => {
+                    self.focus_prev_pane();
+                }
+                KeyCode::Char('j') => {
+                    self.focus_next_pane();
+                }
+                KeyCode::Char('k') => {
+                    self.focus_prev_pane();
+                }
+                KeyCode::Char('l') => {
+                    self.focus_next_pane();
+                }
+                // Tmux-style: r = reload config
+                KeyCode::Char('r') => {
+                    info!("Config reload requested");
+                    let msg = Message::system("Config reload requested (r)");
+                    self.messages_mut().add_message(msg.clone());
+                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                }
+                // Tmux-style: R = rename current session
+                KeyCode::Char('R') => {
+                    if let Some(session) = self.sessions().current_session() {
+                        info!("Rename session requested: {}", session.id);
+                        let msg = Message::system("Rename: rename is not yet interactive in TUI");
+                        self.messages_mut().add_message(msg.clone());
+                        self.chat_component.add_message(
+                            msg,
+                            &mut self.chat_state,
+                            &self.card_manager,
+                        );
+                        self.chat_component
+                            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    }
+                }
+                // Tmux-style: x = kill-pane / close pane
+                KeyCode::Char('x') => {
+                    info!("Kill pane requested (x)");
+                }
+                // Tmux-style: c = new-window / new view
+                KeyCode::Char('c') => {
+                    if let Err(e) = self.create_new_session() {
+                        error!("Failed to create new session: {e}");
+                    }
+                }
+                // Tmux-style: , = rename-window / rename view
+                KeyCode::Char(',') => {
+                    info!("Rename window requested (,)");
+                    let msg = Message::system("Rename window: not yet interactive in TUI");
+                    self.messages_mut().add_message(msg.clone());
+                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                }
+                // Tmux-style: & = kill-window / kill view
+                KeyCode::Char('&') => {
+                    if let Some(session) = self.sessions().current_session() {
+                        info!("Kill window (session): {}", session.id);
+                        let msg = Message::system(format!(
+                            "Killed view: {}",
+                            session.name.as_deref().unwrap_or("Unnamed")
+                        ));
+                        self.messages_mut().add_message(msg.clone());
+                        self.chat_component.add_message(
+                            msg,
+                            &mut self.chat_state,
+                            &self.card_manager,
+                        );
+                        self.chat_component
+                            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                        self.sessions_mut().clear_current_session();
+                        self.current_input.clear();
+                        self.input_composer.clear();
+                    }
+                }
+                // Tmux-style: " = split-window / new session
+                KeyCode::Char('\"') => {
+                    if let Err(e) = self.create_new_session() {
+                        error!("Failed to create new session: {e}");
+                    }
+                }
+                _ => {} // unknown prefix command
+            }
+            return Ok(());
+        }
+
+        // If help is shown, Esc closes it (close help does not require prefix)
         if self.show_help {
             if key.code == KeyCode::Esc {
                 self.show_help = false;
             }
             return Ok(());
-        }
-
-        // Number keys 1-4 for top-level view switching (Dashboard, IDE, Kanban, Chat)
-        match key.code {
-            KeyCode::Char('1') => {
-                self.current_view = ViewState::Dashboard;
-                return Ok(());
-            }
-            KeyCode::Char('2') => {
-                self.current_view = ViewState::Ide;
-                return Ok(());
-            }
-            KeyCode::Char('3') => {
-                self.current_view = ViewState::Kanban;
-                return Ok(());
-            }
-            KeyCode::Char('4') => {
-                self.current_view = ViewState::Chat;
-                return Ok(());
-            }
-            _ => {}
         }
 
         // If a prompt is active, let the prompt manager handle keys
@@ -1065,23 +1156,6 @@ impl App {
                     self.input_composer.set_active(true);
                     return Ok(());
                 }
-                // Tmux-style pane navigation: h/j/k/l in Normal mode
-                KeyCode::Char('h') => {
-                    self.focus_prev_pane();
-                    return Ok(());
-                }
-                KeyCode::Char('j') => {
-                    self.focus_next_pane();
-                    return Ok(());
-                }
-                KeyCode::Char('k') => {
-                    self.focus_prev_pane();
-                    return Ok(());
-                }
-                KeyCode::Char('l') => {
-                    self.focus_next_pane();
-                    return Ok(());
-                }
                 // Alternative scroll keys (non-vim)
                 KeyCode::Down => {
                     self.chat_component.select_next(&mut self.chat_state, &self.card_manager);
@@ -1120,59 +1194,6 @@ impl App {
                 }
                 KeyCode::PageDown => {
                     self.chat_component.scroll_down(&mut self.chat_state, 10, &self.card_manager);
-                    return Ok(());
-                }
-                // Tmux-style: r = reload config
-                KeyCode::Char('r') => {
-                    info!("Config reload requested");
-                    let msg = Message::system("Config reload requested (r)");
-                    self.messages_mut().add_message(msg.clone());
-                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
-                    return Ok(());
-                }
-                // Tmux-style: R = rename current session
-                KeyCode::Char('R') => {
-                    if let Some(session) = self.sessions().current_session() {
-                        info!("Rename session requested: {}", session.id);
-                        let msg = Message::system("Rename: rename is not yet interactive in TUI");
-                        self.messages_mut().add_message(msg.clone());
-                        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
-                    }
-                    return Ok(());
-                }
-                // Tmux-style: x = kill-pane / close pane
-                KeyCode::Char('x') => {
-                    info!("Kill pane requested (x)");
-                    return Ok(());
-                }
-                // Tmux-style: c = new-window / new view
-                KeyCode::Char('c') => {
-                    self.create_new_session()?;
-                    return Ok(());
-                }
-                // Tmux-style: , = rename-window / rename view
-                KeyCode::Char(',') => {
-                    info!("Rename window requested (,)");
-                    let msg = Message::system("Rename window: not yet interactive in TUI");
-                    self.messages_mut().add_message(msg.clone());
-                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
-                    return Ok(());
-                }
-                // Tmux-style: & = kill-window / kill view
-                KeyCode::Char('&') => {
-                    if let Some(session) = self.sessions().current_session() {
-                        info!("Kill window (session): {}", session.id);
-                        let msg = Message::system(format!("Killed view: {}", session.name.as_deref().unwrap_or("Unnamed")));
-                        self.messages_mut().add_message(msg.clone());
-                        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
-                        self.sessions_mut().clear_current_session();
-                        self.current_input.clear();
-                        self.input_composer.clear();
-                    }
                     return Ok(());
                 }
                 _ => {}
@@ -2977,6 +2998,7 @@ mod tests {
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
             show_help: false,
+            prefix_mode: false,
         };
     }
 
@@ -3031,6 +3053,7 @@ mod tests {
             shader_state: crate::ui::effects::ShaderState::new(),
             last_completion_query: None,
             show_help: false,
+            prefix_mode: false,
         };
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);

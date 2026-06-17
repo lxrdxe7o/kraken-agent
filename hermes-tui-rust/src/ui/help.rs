@@ -64,16 +64,30 @@ impl HelpOverlay {
             ))
         }
 
-        // ── Pane Navigation ──
-        lines.push(section("Pane Navigation  (Normal mode)"));
-        lines.push(key_desc("h", "Focus pane left"));
-        lines.push(key_desc("j", "Focus pane down"));
-        lines.push(key_desc("k", "Focus pane up"));
-        lines.push(key_desc("l", "Focus pane right"));
+        // ── Prefix Key ──
+        lines.push(section("Prefix Key  (tmux-style)"));
+
+        let prefix_line = Line::from(vec![
+            Span::styled("  Alt+A  ", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("then command key  —  ", Style::default().fg(DIM)),
+            Span::styled("Esc", Style::default().fg(GREEN)),
+            Span::styled(" cancels prefix", Style::default().fg(DIM)),
+        ]);
+        lines.push(prefix_line);
+        lines.push(Line::from(""));
+        lines.push(key_desc("Alt+A then ?", "Toggle this help screen"));
+        lines.push(key_desc("Esc (from help)", "Close help"));
         lines.push(Line::from(""));
 
-        // ── Pane Resize ──
-        lines.push(section("Pane Resize"));
+        // ── Pane Navigation ──
+        lines.push(section("Pane Navigation"));
+
+        let nav_prefix = Line::from(vec![
+            Span::styled("  (prefix) ", Style::default().fg(DIM)),
+            Span::styled("h/j/k/l", Style::default().fg(GREEN)),
+            Span::styled("  —  Focus panes", Style::default().fg(LIGHT)),
+        ]);
+        lines.push(nav_prefix);
         lines.push(key_desc("Alt+←/→/↑/↓", "Resize pane 5 cells"));
         lines.push(Line::from(""));
 
@@ -84,16 +98,19 @@ impl HelpOverlay {
         lines.push(key_desc("Ctrl+l", "List sessions"));
         lines.push(key_desc("Ctrl+k", "Kill current session"));
         lines.push(key_desc("Ctrl+d", "Detach / close session"));
-        lines.push(key_desc("R", "Rename session"));
         lines.push(key_desc("Ctrl+a", "Switch to session…"));
+        lines.push(key_desc("(prefix) R", "Rename session"));
+        lines.push(key_desc("(prefix) r", "Reload config"));
         lines.push(Line::from(""));
 
-        // ── View Management ──
-        lines.push(section("View / Window Management"));
-        lines.push(key_desc("c", "New view"));
-        lines.push(key_desc(",", "Rename view"));
-        lines.push(key_desc("x", "Close pane"));
-        lines.push(key_desc("&", "Kill view"));
+        // ── View / Window Management (prefix) ──
+        lines.push(section("View / Window Management  (prefix)"));
+        lines.push(key_desc("(prefix) 1…4", "Switch views  (1=Dashboard, 4=Chat)"));
+        lines.push(key_desc("(prefix) c", "New view"));
+        lines.push(key_desc("(prefix) ,", "Rename view"));
+        lines.push(key_desc("(prefix) \"", "New view (split)"));
+        lines.push(key_desc("(prefix) x", "Close pane"));
+        lines.push(key_desc("(prefix) &", "Kill view"));
         lines.push(Line::from(""));
 
         // ── Input Modes ──
@@ -104,25 +121,15 @@ impl HelpOverlay {
         lines.push(key_desc("Enter", "Submit prompt"));
         lines.push(Line::from(""));
 
-        // ── Views (top bar) ──
-        lines.push(section("Views"));
-        lines.push(key_desc("1", "Dashboard"));
-        lines.push(key_desc("2", "IDE"));
-        lines.push(key_desc("3", "Kanban"));
-        lines.push(key_desc("4", "Chat"));
-        lines.push(Line::from(""));
-
         // ── Other ──
         lines.push(section("Other"));
-        lines.push(key_desc("?", "Toggle this help screen"));
-        lines.push(key_desc("r", "Reload config"));
         lines.push(key_desc("Ctrl+m", "Model picker"));
         lines.push(key_desc("Ctrl+c / q", "Quit"));
 
         // Footer hint
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            " Press ? or Esc to close ",
+            " Press Alt+A ? or Esc to close ",
             Style::default().fg(DIM).add_modifier(Modifier::DIM),
         )]));
 
