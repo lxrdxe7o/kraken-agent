@@ -17,6 +17,7 @@ pub mod prompts;
 pub mod session_picker;
 pub mod subagent;
 pub mod toolbar;
+pub mod wave;
 
 // Re-export when modules are implemented
 // pub use chat::*;

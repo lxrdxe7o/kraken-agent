@@ -138,6 +138,8 @@ pub struct App {
     focus_pane: FocusPane,
     /// Global animation frame counter for animated borders
     animation_frame: u64,
+    /// Sine-wave loading footer ticker (Aetheric Shader, Phase 4)
+    wave_ticker: crate::ui::wave::WaveTicker,
 }
 
 impl App {
@@ -213,6 +215,7 @@ impl App {
             current_view: ViewState::Dashboard,
             focus_pane: FocusPane::default(),
             animation_frame: 0,
+            wave_ticker: crate::ui::wave::WaveTicker::new(),
         })
     }
 
@@ -601,6 +604,11 @@ impl App {
 
             // Update toolbar animation
             self.toolbar.tick(self.thinking);
+
+            // Advance or stop the sine-wave loading footer (Phase 4)
+            if self.thinking {
+                self.wave_ticker.advance();
+            }
 
             // Increment animation frame for animated borders
             self.animation_frame = self.animation_frame.wrapping_add(1);
@@ -2126,6 +2134,8 @@ impl App {
         let animation_frame = self.animation_frame;
         let config_snapshot = unsafe { &*config_ptr };
         let base_border_color: Color = Color::from(config_snapshot.theme.chat.border.clone());
+        let wave_tick = self.wave_ticker.current_tick();
+        let wave_active = self.wave_ticker.is_active();
 
         crate::engine::draw_sync(&mut self.terminal, move |frame| {
             use ratatui::layout::Alignment;
@@ -2253,6 +2263,7 @@ impl App {
                 ViewState::Chat => {
                     // Chat view with animated focus-pane borders
                     let banner_height = if main_area.height > 40 { 7 } else { 1 };
+                    let wave_height: u16 = if wave_active { 1 } else { 0 };
 
                     let main_layout = Layout::default()
                         .direction(Direction::Vertical)
@@ -2262,6 +2273,7 @@ impl App {
                             Constraint::Min(1),
                             Constraint::Length(activity_height),
                             Constraint::Length(5),
+                            Constraint::Length(wave_height),
                             Constraint::Length(3),
                         ])
                         .split(main_area);
@@ -2308,9 +2320,14 @@ impl App {
                     let toolbar_block = Block::bordered()
                         .border_type(BorderType::Thick)
                         .border_style(Self::animated_border_style(focus_pane == FocusPane::Toolbar, animation_frame, base_border_color));
-                    let toolbar_inner = toolbar_block.inner(main_layout[4]);
-                    frame.render_widget(toolbar_block, main_layout[4]);
+                    let toolbar_inner = toolbar_block.inner(main_layout[5]);
+                    frame.render_widget(toolbar_block, main_layout[5]);
                     toolbar.render(frame, toolbar_inner);
+
+                    // Sine-wave loading footer (Phase 4 — Aetheric Shaders)
+                    if wave_active {
+                        crate::ui::wave::render_wave_footer(frame, main_layout[4], wave_tick);
+                    }
 
                     // Sidebar with animated border
                     if show_sidebar && sidebar_area.width > 0 {
@@ -2609,6 +2626,7 @@ mod tests {
             current_view: ViewState::Dashboard,
             focus_pane: FocusPane::default(),
             animation_frame: 0,
+            wave_ticker: crate::ui::wave::WaveTicker::new(),
         };
     }
 
@@ -2658,6 +2676,7 @@ mod tests {
             current_view: ViewState::Dashboard,
             focus_pane: FocusPane::default(),
             animation_frame: 0,
+            wave_ticker: crate::ui::wave::WaveTicker::new(),
         };
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);
