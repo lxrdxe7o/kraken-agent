@@ -329,6 +329,16 @@ impl MessageHistory {
         self.messages.pop_back()
     }
 
+    /// Drop everything from `index` onward (keep `[0, index)`).
+    /// `index` >= len is a no-op.
+    pub fn truncate_from(&mut self, index: usize) {
+        if index < self.messages.len() {
+            self.messages.truncate(index);
+        } else {
+            self.messages.clear();
+        }
+    }
+
     /// Get messages in a range
     #[must_use]
     pub fn range(&self, start: usize, end: usize) -> Vec<&Message> {
@@ -389,6 +399,26 @@ impl MessageHistory {
         } else {
             None
         }
+    }
+
+    /// Replace a message in-place by its message_id. Returns true on success.
+    /// Used by the App to patch streaming `reasoning` on the live message.
+    pub fn replace_by_id(&mut self, message_id: &str, updated: Message) -> bool {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .find(|m| m.message_id.as_deref() == Some(message_id))
+        {
+            *msg = updated;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get a mutable reference to a message at a specific index.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Message> {
+        self.messages.get_mut(index)
     }
 }
 

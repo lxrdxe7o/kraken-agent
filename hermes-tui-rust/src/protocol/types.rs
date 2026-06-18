@@ -76,6 +76,18 @@ pub struct SessionInfo {
     pub message_count: Option<usize>,
 }
 
+/// Optional capability counts reported by the gateway in the ready message.
+/// Older gateways don't send this; we fall back to a `Default` empty struct.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatewayCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_count: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<String>>,
+}
+
 /// Gateway ready response - first message from gateway
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayReadyResponse {
@@ -87,6 +99,9 @@ pub struct GatewayReadyResponse {
     pub skin: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<ModelOptionProvider>>,
+    /// Optional capability counts for the chat empty-state landing page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<GatewayCapabilities>,
 }
 
 /// Session list item
@@ -879,6 +894,7 @@ mod tests {
             config: None,
             skin: None,
             models: None,
+            capabilities: None,
         });
 
         let serialized = serde_json::to_string(&msg).unwrap();

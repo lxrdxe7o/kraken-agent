@@ -2,6 +2,7 @@
 //!
 //! This module contains the application state and state management logic.
 
+pub mod capabilities;
 pub mod config;
 pub mod hashline;
 pub mod messages;

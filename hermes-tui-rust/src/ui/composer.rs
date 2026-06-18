@@ -63,20 +63,7 @@ impl InputComposer {
     /// Create a new input composer with all defaults
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        })
+        Self::new(ChatColorsRgb::default())
     }
 
     /// Set the input mode
@@ -427,9 +414,7 @@ impl InputComposer {
             cursor_y += wrapped_extra;
             let cursor_x = area.x + final_col;
 
-            if cursor_x < area.x + area.width
-                && cursor_y < area.y + area.height
-            {
+            if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
                 frame.set_cursor_position(Position::new(cursor_x, cursor_y));
             }
         }
@@ -477,7 +462,7 @@ impl InputComposer {
         if self.active {
             let prompt_width = self.prompt.width() as u16;
             let inner_width = area.width;
-            
+
             // In render_clean, if input is empty, there are 2 welcome lines before the prompt line.
             // If input is NOT empty, there is only the prompt line (plus any wrapped lines).
             let welcome_line_count = if self.input.is_empty() { 2 } else { 0 };
@@ -512,7 +497,11 @@ impl InputComposer {
             let line_start = input_before.rfind('\n').map_or(0, |i| i + 1);
             let text_in_line = &input_before[line_start..];
             let col_in_line = text_in_line.width() as u16;
-            let current_prompt_width = if current_logical_line_idx == 0 { prompt_width } else { 0 };
+            let current_prompt_width = if current_logical_line_idx == 0 {
+                prompt_width
+            } else {
+                0
+            };
             let first_line_width = inner_width.saturating_sub(current_prompt_width);
 
             let (wrapped_extra, final_col) =
@@ -530,15 +519,20 @@ impl InputComposer {
             cursor_y += wrapped_extra;
             let cursor_x = area.x + final_col;
 
-            if cursor_x < area.x + area.width
-                && cursor_y < area.y + area.height
-            {
+            if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
                 frame.set_cursor_position(Position::new(cursor_x, cursor_y));
             }
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, animation_frame: u64, focused: bool, is_running: bool) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        animation_frame: u64,
+        focused: bool,
+        is_running: bool,
+    ) {
         let border_style = if self.active {
             Style::new().fg(self.colors.border)
         } else {
@@ -657,7 +651,13 @@ impl InputComposer {
             }
         }
 
-        crate::ui::borders::render_gradient_border(frame.buffer_mut(), area, animation_frame, focused, is_running);
+        crate::ui::borders::render_gradient_border(
+            frame.buffer_mut(),
+            area,
+            animation_frame,
+            focused,
+            is_running,
+        );
     }
 }
 
@@ -667,20 +667,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn create_test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

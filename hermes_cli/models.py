@@ -3934,8 +3934,15 @@ def validate_requested_model(
             ),
         }
 
-    # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    # Probe the live API to check if the model actually exists.
+    # Prefer provider_model_ids (picks up the provider profile's custom
+    # fetch_models, e.g. user-defined or plugin providers whose live
+    # /v1/models endpoint returns an incomplete subset).  Fall back to
+    # the raw /v1/models probe for providers without a profile.
+    api_models = (
+        provider_model_ids(normalized)
+        if normalized else fetch_api_models(api_key, base_url)
+    )
 
     if api_models is not None:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs

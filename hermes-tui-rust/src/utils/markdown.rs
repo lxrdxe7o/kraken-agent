@@ -142,12 +142,12 @@ pub fn render_markdown<'a>(content: &'a str, colors: &ChatColorsRgb, width: u16)
                     if let Some(prefix) = pending_list_prefix.take() {
                         current_line.push(Span::styled(prefix, base_style(colors)));
                     }
-                    
+
                     // Parse ANSI codes in the text
                     let parsed = ansi_parser.parse(&text);
                     for (segment, ansi_style) in parsed {
                         let mut final_style = current_style;
-                        
+
                         // Merge ANSI style with markdown style
                         let r_style = ansi_style.to_ratatui_style();
                         if let Some(fg) = r_style.fg {
@@ -158,7 +158,7 @@ pub fn render_markdown<'a>(content: &'a str, colors: &ChatColorsRgb, width: u16)
                         }
                         final_style.add_modifier |= r_style.add_modifier;
                         final_style.sub_modifier |= r_style.sub_modifier;
-                        
+
                         current_line.push(Span::styled(segment, final_style));
                     }
                 }
@@ -224,20 +224,7 @@ mod tests {
     use super::*;
 
     fn test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: Color::Indexed(238),
-            user_text: Color::Indexed(252),
-            assistant_bg: Color::Indexed(236),
-            assistant_text: Color::Indexed(248),
-            system_bg: Color::Indexed(235),
-            system_text: Color::Indexed(245),
-            tool_bg: Color::Indexed(237),
-            tool_text: Color::Indexed(243),
-            code_bg: Color::Indexed(233),
-            code_text: Color::Indexed(252),
-            border: Color::Indexed(240),
-            timestamp: Color::Indexed(244),
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

@@ -39,6 +39,7 @@ use crate::protocol::types::{
 use crate::state::config::FocusPane;
 use crate::state::config::InputMode;
 use crate::state::{
+    capabilities::Capabilities,
     config::TuiConfig,
     messages::{Message, MessageHistory},
     session::{Session, SessionManager},
@@ -47,7 +48,11 @@ use crate::ui::completions::CompletionPopup;
 use crate::ui::model_picker::ModelPicker;
 use crate::ui::prompts::PromptManager;
 use crate::ui::session_picker::SessionPicker;
-use crate::ui::{chat::ChatComponent, composer::InputComposer, toolbar::Toolbar};
+use crate::ui::{
+    chat::ChatAction, chat::ChatCommand, chat::ChatComponent, composer::InputComposer,
+    toolbar::Toolbar,
+};
+use crate::utils::clipboard::Clipboard;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewState {
@@ -61,7 +66,6 @@ pub enum ViewState {
 ///
 /// This struct holds all the state needed for the Hermes Rust TUI application.
 /// It manages the terminal, configuration, sessions, messages, and gateway communication.
-#[derive(Debug)]
 pub struct App {
     /// Ratatui terminal instance with Crossterm backend
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -141,12 +145,23 @@ pub struct App {
     wave_ticker: crate::ui::wave::WaveTicker,
     /// Global aetheric shader state (Phase 4.2)
     shader_state: crate::ui::effects::ShaderState,
+    /// Clipboard backend (arboard or OSC 52 fallback).
+    clipboard: Box<dyn Clipboard>,
+    /// Gateway-reported capabilities for the empty-state landing page.
+    capabilities: Capabilities,
     /// Last completion query sent to gateway (to deduplicate)
     last_completion_query: Option<String>,
     /// Whether the keybinding help overlay is visible
     show_help: bool,
     /// Whether we are in tmux-style prefix mode (Alt+A then a command key)
     prefix_mode: bool,
+    /// Accumulator for streaming reasoning text received from the gateway
+    /// via ReasoningAvailable / ReasoningDelta / ThinkingDelta events.
+    /// Resets when a new assistant turn begins.
+    pub streaming_reasoning: String,
+    /// message_id of the currently-streaming assistant message. Used as a
+    /// marker so reasoning updates only target the active turn.
+    pub streaming_message_id: Option<String>,
 }
 
 impl App {
@@ -182,7 +197,7 @@ impl App {
         let theme_colors_rgb = config.theme.colors.to_rgb_colors();
         let chat_colors_rgb = config.theme.chat.to_rgb_colors();
 
-        let mut input_composer = InputComposer::new(chat_colors_rgb);
+        let mut input_composer = InputComposer::new(chat_colors_rgb.clone());
         input_composer.set_input_mode(InputMode::Insert);
 
         Ok(Self {
@@ -195,7 +210,7 @@ impl App {
             reconnecting: false,
             reconnect_attempts: 0,
             actual_activity_height: 0.0,
-            card_manager: CardManager::new(chat_colors_rgb),
+            card_manager: CardManager::new(chat_colors_rgb.clone()),
             subagent_list: SubagentList::new(),
             hashline_viewer: HashlineViewer::new(),
             gateway_process: None,
@@ -203,19 +218,19 @@ impl App {
             input_mode: InputMode::Insert,
             current_input: String::new(),
             cursor_position: 0,
-            chat_component: ChatComponent::new(chat_colors_rgb, true),
+            chat_component: ChatComponent::new(chat_colors_rgb.clone(), true),
             chat_state: crate::ui::chat::ChatState::default(),
             input_composer,
-            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
+            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb.clone()),
             banner: crate::ui::banner::Banner,
-            prompt_manager: PromptManager::new(chat_colors_rgb),
+            prompt_manager: PromptManager::new(chat_colors_rgb.clone()),
             pending_approval_id: None,
             pending_clarify_id: None,
             pending_sudo_id: None,
             pending_secret_id: None,
-            completion_popup: CompletionPopup::new(chat_colors_rgb),
-            model_picker: ModelPicker::new(chat_colors_rgb),
-            session_picker: SessionPicker::new(chat_colors_rgb),
+            completion_popup: CompletionPopup::new(chat_colors_rgb.clone()),
+            model_picker: ModelPicker::new(chat_colors_rgb.clone()),
+            session_picker: SessionPicker::new(chat_colors_rgb.clone()),
             mouse_context: MouseContext::new(),
             current_model: None,
             current_provider: None,
@@ -225,9 +240,13 @@ impl App {
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
+            clipboard: Self::make_clipboard(),
+            capabilities: Capabilities::default(),
             last_completion_query: None,
             show_help: false,
             prefix_mode: false,
+            streaming_reasoning: String::new(),
+            streaming_message_id: None,
         })
     }
 
@@ -244,6 +263,21 @@ impl App {
     /// Get a mutable reference to the terminal
     pub fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
         &mut self.terminal
+    }
+
+    /// Construct a clipboard backend: `arboard` if available, else OSC 52
+    /// to a side-channel sink that is overwritten on every call.
+    fn make_clipboard() -> Box<dyn Clipboard> {
+        #[cfg(feature = "clipboard-support")]
+        {
+            match crate::utils::clipboard::ArboardClipboard::new() {
+                Ok(cb) => return Box::new(cb),
+                Err(e) => log::warn!("arboard clipboard unavailable ({e}); falling back to OSC 52"),
+            }
+        }
+        // OSC 52 writes go to /dev/null: the side-effect is invisible but the
+        // API is consistent. Terminal-side support is the user's responsibility.
+        Box::new(crate::utils::clipboard::Osc52Clipboard::new(std::io::sink()))
     }
 
     /// Get a reference to the configuration
@@ -733,7 +767,8 @@ impl App {
             self.reconnect_attempts
         ));
         self.messages_mut().add_message(msg.clone());
-        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .add_message(msg, &mut self.chat_state, &self.card_manager);
 
         // Attempt to reconnect
         if let Err(e) = self.connect_gateway() {
@@ -816,8 +851,10 @@ impl App {
                     info!("Config reload requested");
                     let msg = Message::system("Config reload requested (r)");
                     self.messages_mut().add_message(msg.clone());
-                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                 }
                 // Tmux-style: R = rename current session
                 KeyCode::Char('R') => {
@@ -849,8 +886,10 @@ impl App {
                     info!("Rename window requested (,)");
                     let msg = Message::system("Rename window: not yet interactive in TUI");
                     self.messages_mut().add_message(msg.clone());
-                    self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .add_message(msg, &mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                 }
                 // Tmux-style: & = kill-window / kill view
                 KeyCode::Char('&') => {
@@ -1059,9 +1098,13 @@ impl App {
                         };
                         let system_message = Message::system(format!("Resuming session: {title}"));
                         self.messages_mut().add_message(system_message.clone());
+                        self.chat_component.add_message(
+                            system_message,
+                            &mut self.chat_state,
+                            &self.card_manager,
+                        );
                         self.chat_component
-                            .add_message(system_message, &mut self.chat_state, &self.card_manager);
-                        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                         self.session_picker.hide();
                     }
                 }
@@ -1089,14 +1132,16 @@ impl App {
                     self.model_picker.select_prev();
                 }
                 KeyCode::Enter => {
-                    if self.model_picker.stage() == crate::ui::model_picker::ModelPickerStage::Model {
+                    if self.model_picker.stage() == crate::ui::model_picker::ModelPickerStage::Model
+                    {
                         let _ = self.apply_selected_model();
                     } else {
                         self.model_picker.enter_provider();
                     }
                 }
                 KeyCode::Esc => {
-                    if self.model_picker.stage() == crate::ui::model_picker::ModelPickerStage::Model {
+                    if self.model_picker.stage() == crate::ui::model_picker::ModelPickerStage::Model
+                    {
                         self.model_picker.back_to_providers();
                     } else {
                         self.model_picker.hide();
@@ -1122,7 +1167,7 @@ impl App {
                     if let Some(item) = self.completion_popup.selected_item().cloned() {
                         let replace_from = self.completion_popup.replace_from().unwrap_or(0);
                         let input = self.input_composer.get_input().to_string();
-                        
+
                         // In command mode, we want to strip the leading slash if the item has one
                         let mut text = item.text.clone();
                         if self.input_mode == InputMode::Command && text.starts_with('/') {
@@ -1158,13 +1203,15 @@ impl App {
                 }
                 // Alternative scroll keys (non-vim)
                 KeyCode::Down => {
-                    self.chat_component.select_next(&mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .select_next(&mut self.chat_state, &self.card_manager);
                     self.chat_component
                         .ensure_selected_in_view(&mut self.chat_state, &self.card_manager);
                     return Ok(());
                 }
                 KeyCode::Up => {
-                    self.chat_component.select_prev(&mut self.chat_state, &self.card_manager);
+                    self.chat_component
+                        .select_prev(&mut self.chat_state, &self.card_manager);
                     self.chat_component
                         .ensure_selected_in_view(&mut self.chat_state, &self.card_manager);
                     return Ok(());
@@ -1178,7 +1225,8 @@ impl App {
                             if !msg_id.starts_with("subagent:") {
                                 if let Some(msg) = self.messages().get(idx) {
                                     if msg.role == MessageRole::System {
-                                        self.chat_component.toggle_system_expanded(&mut self.chat_state, msg_id);
+                                        self.chat_component
+                                            .toggle_system_expanded(&mut self.chat_state, msg_id);
                                     } else if msg.role == MessageRole::Tool {
                                         self.card_manager.toggle_expanded(msg_id);
                                     }
@@ -1193,7 +1241,27 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::PageDown => {
-                    self.chat_component.scroll_down(&mut self.chat_state, 10, &self.card_manager);
+                    self.chat_component
+                        .scroll_down(&mut self.chat_state, 10, &self.card_manager);
+                    return Ok(());
+                }
+                // Chat-mode message actions
+                KeyCode::Char('y') => {
+                    self.perform_chat_action(crate::ui::chat::ChatAction::YankToComposer)?;
+                    return Ok(());
+                }
+                KeyCode::Char('c') => {
+                    self.perform_chat_action(crate::ui::chat::ChatAction::Copy)?;
+                    return Ok(());
+                }
+                KeyCode::Char('r') => {
+                    self.perform_chat_action(crate::ui::chat::ChatAction::Regenerate)?;
+                    return Ok(());
+                }
+                KeyCode::Char('G') => {
+                    // Jump to bottom of chat (and clear the "↓ N new" pill)
+                    self.chat_component
+                        .jump_to_bottom(&mut self.chat_state, &self.card_manager);
                     return Ok(());
                 }
                 _ => {}
@@ -1207,7 +1275,8 @@ impl App {
             // Select the last message
             let len = self.chat_component.messages().len();
             if len > 0 {
-                self.chat_component.select_prev(&mut self.chat_state, &self.card_manager);
+                self.chat_component
+                    .select_prev(&mut self.chat_state, &self.card_manager);
                 self.chat_component
                     .ensure_selected_in_view(&mut self.chat_state, &self.card_manager);
             }
@@ -1273,10 +1342,15 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('k') {
             if let Some(session) = self.sessions().current_session() {
                 info!("Killing session: {}", session.id);
-                let msg = Message::system(format!("Killed session: {}", session.name.as_deref().unwrap_or("Unnamed")));
+                let msg = Message::system(format!(
+                    "Killed session: {}",
+                    session.name.as_deref().unwrap_or("Unnamed")
+                ));
                 self.messages_mut().add_message(msg.clone());
-                self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                self.chat_component
+                    .add_message(msg, &mut self.chat_state, &self.card_manager);
+                self.chat_component
+                    .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                 // Close the current session
                 self.sessions_mut().clear_current_session();
                 // Re-render
@@ -1290,10 +1364,15 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('d') {
             if let Some(session) = self.sessions().current_session() {
                 info!("Detaching session: {}", session.id);
-                let msg = Message::system(format!("Detached from session: {}", session.name.as_deref().unwrap_or("Unnamed")));
+                let msg = Message::system(format!(
+                    "Detached from session: {}",
+                    session.name.as_deref().unwrap_or("Unnamed")
+                ));
                 self.messages_mut().add_message(msg.clone());
-                self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
-                self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                self.chat_component
+                    .add_message(msg, &mut self.chat_state, &self.card_manager);
+                self.chat_component
+                    .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                 // Close the current session
                 self.sessions_mut().clear_current_session();
                 self.current_input.clear();
@@ -1415,8 +1494,105 @@ impl App {
         self.chat_component
             .add_message(user_message, &mut self.chat_state, &self.card_manager);
         // Auto-scroll to bottom
-        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
 
+        Ok(())
+    }
+
+    /// Perform a `ChatAction` on the currently-selected message.
+    ///
+    /// Returns `Ok(())` if the action was a no-op (no selection, out of bounds,
+    /// etc.) so that keybindings can be wired safely.
+    fn perform_chat_action(&mut self, action: ChatAction) -> Result<()> {
+        let idx = match self.chat_component.get_selected_index(&self.chat_state) {
+            Some(i) => i,
+            None => return Ok(()),
+        };
+        let cmd = self.chat_component.perform_action(action, idx);
+        self.dispatch_chat_command(cmd)
+    }
+
+    /// Translate a `ChatCommand` into the corresponding side effects:
+    /// clipboard write, composer mutation, or session truncation + resubmit.
+    fn dispatch_chat_command(&mut self, cmd: ChatCommand) -> Result<()> {
+        match cmd {
+            ChatCommand::Noop => Ok(()),
+            ChatCommand::Yank(text) => {
+                self.input_composer.set_input(&text);
+                self.current_input = text;
+                self.cursor_position = self.current_input.len();
+                self.set_input_mode(InputMode::Insert);
+                self.input_composer.set_active(true);
+                Ok(())
+            }
+            ChatCommand::Copy(text) => {
+                if let Err(e) = self.clipboard.set_text(&text) {
+                    warn!("clipboard write failed: {e}");
+                }
+                Ok(())
+            }
+            ChatCommand::Edit {
+                message_id,
+                new_content,
+            } => {
+                let id = message_id.clone();
+                if let Some(idx) = self.chat_component.index_of_message_id(&message_id) {
+                    self.messages_mut().truncate_from(idx);
+                } else {
+                    warn!("edit: message {id} not found");
+                    return Ok(());
+                }
+                self.sync_chat_with_messages();
+                let _ = new_content; // Edit UI is a follow-up; for now we just drop the message.
+                Ok(())
+            }
+            ChatCommand::Regenerate { from_index } => {
+                // Find the preceding user message and resubmit its content.
+                let prompt = self
+                    .messages()
+                    .range(0, from_index)
+                    .iter()
+                    .rev()
+                    .find_map(|m| m.is_user().then(|| m.content().to_string()));
+                let Some(prompt) = prompt else {
+                    warn!("regenerate: no preceding user message at index {from_index}");
+                    return Ok(());
+                };
+                self.messages_mut().truncate_from(from_index);
+                self.sync_chat_with_messages();
+                // Submit the same prompt again.
+                self.resubmit_prompt(prompt)
+            }
+            ChatCommand::Delete { from_index } => {
+                self.messages_mut().truncate_from(from_index);
+                self.sync_chat_with_messages();
+                Ok(())
+            }
+            ChatCommand::Branch { .. } => {
+                // Branching creates a new session. Until the action menu
+                // is wired up, we treat Branch as a no-op and log it.
+                info!("branch requested (action menu not yet wired)");
+                Ok(())
+            }
+        }
+    }
+
+    /// Re-submit an existing prompt (used by Regenerate).
+    fn resubmit_prompt(&mut self, prompt: String) -> Result<()> {
+        let session_id = self
+            .sessions()
+            .current_session()
+            .map(|s| s.id.clone())
+            .unwrap_or_default();
+        let request = PromptSubmitRequest {
+            session_id,
+            text: prompt,
+            images: None,
+            truncate_before_user_ordinal: None,
+        };
+        self.thinking = true;
+        self.send_gateway_request(TuiRequest::PromptSubmit(request))?;
         Ok(())
     }
 
@@ -1459,7 +1635,8 @@ impl App {
         self.messages_mut().add_message(user_message.clone());
         self.chat_component
             .add_message(user_message, &mut self.chat_state, &self.card_manager);
-        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
 
         Ok(())
     }
@@ -1485,7 +1662,8 @@ impl App {
         self.messages_mut().add_message(system_message.clone());
         self.chat_component
             .add_message(system_message, &mut self.chat_state, &self.card_manager);
-        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
 
         Ok(())
     }
@@ -1512,15 +1690,23 @@ impl App {
             let system_message =
                 Message::system(format!("Resuming session: {session_name_display}"));
             self.messages_mut().add_message(system_message.clone());
+            self.chat_component.add_message(
+                system_message,
+                &mut self.chat_state,
+                &self.card_manager,
+            );
             self.chat_component
-                .add_message(system_message, &mut self.chat_state, &self.card_manager);
-            self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
         } else {
             let system_message = Message::system("No previous sessions to resume");
             self.messages_mut().add_message(system_message.clone());
+            self.chat_component.add_message(
+                system_message,
+                &mut self.chat_state,
+                &self.card_manager,
+            );
             self.chat_component
-                .add_message(system_message, &mut self.chat_state, &self.card_manager);
-            self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
         }
 
         Ok(())
@@ -1539,7 +1725,8 @@ impl App {
         self.messages_mut().add_message(system_message.clone());
         self.chat_component
             .add_message(system_message, &mut self.chat_state, &self.card_manager);
-        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
 
         Ok(())
     }
@@ -1576,7 +1763,8 @@ impl App {
         if mouse.kind == MouseEventKind::ScrollUp {
             self.chat_component.scroll_up(&mut self.chat_state, 3);
         } else if mouse.kind == MouseEventKind::ScrollDown {
-            self.chat_component.scroll_down(&mut self.chat_state, 3, &self.card_manager);
+            self.chat_component
+                .scroll_down(&mut self.chat_state, 3, &self.card_manager);
         }
         Ok(())
     }
@@ -1640,15 +1828,22 @@ impl App {
             }
             GatewayMessage::ReasoningAvailable(reasoning) => {
                 debug!("Reasoning available: {reasoning:?}");
+                self.append_streaming_reasoning(&reasoning);
             }
             GatewayMessage::ReasoningDelta(delta) => {
                 debug!("Reasoning delta: {delta:?}");
+                self.append_streaming_reasoning(&delta);
             }
             GatewayMessage::MessageStart(start) => {
                 debug!("Message start: {start:?}");
+                // A new assistant turn is starting. Clear any leftover
+                // streaming-reasoning accumulator from the previous turn.
+                self.streaming_reasoning.clear();
+                self.streaming_message_id = None;
             }
             GatewayMessage::ThinkingDelta(delta) => {
                 debug!("Thinking delta: {delta:?}");
+                self.append_streaming_reasoning(&delta);
             }
             GatewayMessage::NoticeUpsert(notice) => {
                 debug!("Notice upsert: {notice:?}");
@@ -1790,6 +1985,16 @@ impl App {
         // Populate sessions in manager
         if let Some(sessions) = &ready.sessions {
             self.sessions_mut().set_sessions(sessions.clone());
+        }
+
+        // Populate capabilities for the empty-state landing page.
+        if let Some(caps) = &ready.capabilities {
+            self.capabilities = Capabilities {
+                tool_count: caps.tool_count.unwrap_or(0),
+                skill_count: caps.skill_count.unwrap_or(0),
+                mcp_servers: caps.mcp_servers.clone().unwrap_or_default(),
+                ..self.capabilities.clone()
+            };
         }
 
         // Auto-resume latest session or create a new one if none exist
@@ -1940,7 +2145,8 @@ impl App {
         );
         message.message_id = Some(tool_start.call_id.clone());
         self.messages_mut().add_message(message.clone());
-        self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .add_message(message, &mut self.chat_state, &self.card_manager);
 
         Ok(())
     }
@@ -1988,7 +2194,8 @@ impl App {
         } else if let Some(s) = tool_complete.result.as_str() {
             s.to_string() // Prevents string values from being rendered with literal `\n` instead of actual newlines
         } else {
-            serde_json::to_string_pretty(&tool_complete.result).unwrap_or_else(|_| "Error serializing result".to_string())
+            serde_json::to_string_pretty(&tool_complete.result)
+                .unwrap_or_else(|_| "Error serializing result".to_string())
         };
 
         // Update card manager with result via call_id
@@ -2039,7 +2246,8 @@ impl App {
                 ),
             );
             self.messages_mut().add_message(message.clone());
-            self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
+            self.chat_component
+                .add_message(message, &mut self.chat_state, &self.card_manager);
         }
         Ok(())
     }
@@ -2103,6 +2311,12 @@ impl App {
         self.shader_state.trigger_stream_effect();
         let session_id = delta.session_id.clone().unwrap_or_default();
         let message_id = format!("{session_id}:streaming");
+        // Track the streaming message_id for reasoning updates and reset the
+        // reasoning accumulator when a new assistant turn begins.
+        if self.streaming_message_id.as_deref() != Some(message_id.as_str()) {
+            self.streaming_reasoning.clear();
+            self.streaming_message_id = Some(message_id.clone());
+        }
         if let Some(last_msg) = self.messages().last() {
             if last_msg.message_id == Some(message_id.clone()) {
                 if let Some(last_msg_mut) = self.messages_mut().last_mut() {
@@ -2126,12 +2340,19 @@ impl App {
     fn handle_message_complete(&mut self, complete: MessageComplete) -> Result<()> {
         debug!("Message complete: text length={}", complete.text.len());
         self.thinking = false;
-        
+
         let mut message = Message::new(MessageRole::Assistant, complete.text);
         message.usage = complete.usage.clone();
-        message.reasoning = complete.reasoning;
+        // Prefer the static reasoning field supplied by the gateway's
+        // MessageComplete event. Fall back to whatever the streaming
+        // accumulator collected (defensive — this should match in practice).
+        if complete.reasoning.is_some() {
+            message.reasoning = complete.reasoning;
+        } else if !self.streaming_reasoning.is_empty() {
+            message.reasoning = Some(self.streaming_reasoning.clone());
+        }
         message.warning = complete.warning;
-        
+
         // Update session usage stats
         if let Some(ref usage) = complete.usage {
             if let Some(session) = self.sessions_mut().current_session_mut() {
@@ -2140,9 +2361,89 @@ impl App {
         }
 
         self.messages_mut().add_message(message.clone());
-        self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
-        self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .add_message(message, &mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+
+        // Turn is finished — clear the streaming-reasoning accumulator and
+        // forget the streaming message marker so the next turn starts fresh.
+        self.streaming_reasoning.clear();
+        self.streaming_message_id = None;
         Ok(())
+    }
+
+    /// Extract a reasoning text payload from a `serde_json::Value` produced by
+    /// the gateway's ReasoningAvailable / ReasoningDelta / ThinkingDelta
+    /// events. Tries common field names (`text`, `delta`, `reasoning`,
+    /// `content`) and gracefully handles string-typed values.
+    fn extract_reasoning_text(value: &serde_json::Value) -> Option<String> {
+        if let Some(s) = value.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(obj) = value.as_object() {
+            for key in ["text", "delta", "reasoning", "content", "value"] {
+                if let Some(v) = obj.get(key) {
+                    if let Some(s) = v.as_str() {
+                        return Some(s.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Append a reasoning fragment (from a ReasoningAvailable /
+    /// ReasoningDelta / ThinkingDelta gateway event) to the accumulator and
+    /// propagate the running total into the currently-streaming assistant
+    /// message so the renderer sees it on the next draw.
+    fn append_streaming_reasoning(&mut self, value: &serde_json::Value) {
+        let Some(text) = Self::extract_reasoning_text(value) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        self.streaming_reasoning.push_str(&text);
+        // Reflect the running reasoning total into the live streaming
+        // assistant message, both in the canonical `messages` history and
+        // in `chat_component.messages` (which the renderer iterates).
+        let message_id = self
+            .streaming_message_id
+            .clone()
+            .or_else(|| Some(String::new()));
+        let Some(message_id) = message_id else {
+            return;
+        };
+        if message_id.is_empty() {
+            return;
+        }
+        let reasoning_snapshot = self.streaming_reasoning.clone();
+        // 1) Update the messages history.
+        if let Some(idx) = self
+            .messages()
+            .to_vec()
+            .iter()
+            .position(|m| m.message_id.as_deref() == Some(message_id.as_str()))
+        {
+            if let Some(msg_mut) = self.messages_mut().get_mut(idx) {
+                msg_mut.reasoning = Some(reasoning_snapshot.clone());
+            }
+        }
+        // 2) Update the chat component's message list (renderer source).
+        //    We clone the existing message and patch `reasoning`, then call
+        //    `update_message` which is the public mutator on ChatComponent.
+        if let Some(existing) = self
+            .chat_component
+            .messages()
+            .iter()
+            .find(|m| m.message_id.as_deref() == Some(message_id.as_str()))
+            .cloned()
+        {
+            let mut updated = existing;
+            updated.reasoning = Some(reasoning_snapshot);
+            self.chat_component.update_message(updated);
+        }
     }
     fn handle_approval_request(&mut self, request: ApprovalRequest) -> Result<()> {
         info!(
@@ -2203,7 +2504,10 @@ impl App {
                 // In Command mode, the input buffer doesn't have the leading slash.
                 // If the gateway returned a replace_from, we might need to adjust it.
                 let replace_from = if self.input_mode == InputMode::Command {
-                    completion.replace_from.map(|rf| rf.saturating_sub(1)).unwrap_or(0)
+                    completion
+                        .replace_from
+                        .map(|rf| rf.saturating_sub(1))
+                        .unwrap_or(0)
                 } else {
                     completion.replace_from.unwrap_or(1)
                 };
@@ -2227,7 +2531,7 @@ impl App {
     /// Trigger completion requests when the input matches slash/path prefixes.
     fn maybe_request_completion(&mut self) -> Result<()> {
         let input = self.input_composer.get_input().to_string();
-        
+
         // In command mode, the input doesn't have a leading slash, but the completion logic
         // and the gateway expect one.
         let query = if self.input_mode == InputMode::Command {
@@ -2237,7 +2541,9 @@ impl App {
         };
 
         // Deduplicate requests to avoid overwhelming the gateway
-        if self.last_completion_query.as_deref() == Some(&query) && self.completion_popup.is_visible() {
+        if self.last_completion_query.as_deref() == Some(&query)
+            && self.completion_popup.is_visible()
+        {
             return Ok(());
         }
         self.last_completion_query = Some(query.clone());
@@ -2302,17 +2608,24 @@ impl App {
                 Ok(_) => {
                     let system_message = Message::system(format!("Model switched to: {model}"));
                     self.messages_mut().add_message(system_message.clone());
+                    self.chat_component.add_message(
+                        system_message,
+                        &mut self.chat_state,
+                        &self.card_manager,
+                    );
                     self.chat_component
-                        .add_message(system_message, &mut self.chat_state, &self.card_manager);
-                    self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+                        .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
                     self.model_picker.hide();
-                },
+                }
                 Err(e) => {
                     error!("Failed to send config.set request for model switch: {e}");
                     let error_message = Message::error(format!("Failed to switch model: {e}"));
                     self.messages_mut().add_message(error_message.clone());
-                    self.chat_component
-                        .add_message(error_message, &mut self.chat_state, &self.card_manager);
+                    self.chat_component.add_message(
+                        error_message,
+                        &mut self.chat_state,
+                        &self.card_manager,
+                    );
                 }
             }
         }
@@ -2326,16 +2639,20 @@ impl App {
 
             let message = Message::system(output);
             self.messages_mut().add_message(message.clone());
-            self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
-            self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+            self.chat_component
+                .add_message(message, &mut self.chat_state, &self.card_manager);
+            self.chat_component
+                .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
         }
         if let Some(warning) = response.warning {
             log::warn!("Slash command warning: {warning}");
 
             let message = Message::system(format!("Warning: {warning}"));
             self.messages_mut().add_message(message.clone());
-            self.chat_component.add_message(message, &mut self.chat_state, &self.card_manager);
-            self.chat_component.scroll_to_bottom(&mut self.chat_state, &self.card_manager);
+            self.chat_component
+                .add_message(message, &mut self.chat_state, &self.card_manager);
+            self.chat_component
+                .scroll_to_bottom(&mut self.chat_state, &self.card_manager);
         }
         Ok(())
     }
@@ -2366,7 +2683,7 @@ impl App {
         if let Some(details) = error.details {
             log::error!("Details: {details}");
         }
-        
+
         // Hide overlays that might be waiting for a response
         if self.model_picker.is_visible() {
             self.model_picker.hide();
@@ -2580,7 +2897,7 @@ impl App {
                 ViewState::Chat => {
                     // Chat view with animated focus-pane borders
                     let banner_height = if main_area.height > 40 { 7 } else { 1 };
-                    let wave_height: u16 = if wave_active { 1 } else { 0 };
+                    let wave_height: u16 = if wave_active { 2 } else { 0 };
 
                     let main_layout = Layout::default()
                         .direction(Direction::Vertical)
@@ -2607,10 +2924,25 @@ impl App {
                     let chat_block = Block::bordered();
                     let chat_inner = chat_block.inner(chat_area);
                     frame.render_widget(chat_block, chat_area);
-                    crate::ui::borders::render_gradient_border(frame.buffer_mut(), chat_area, animation_frame, focus_pane == FocusPane::Chat, self.thinking);
+                    crate::ui::borders::render_gradient_border(
+                        frame.buffer_mut(),
+                        chat_area,
+                        animation_frame,
+                        focus_pane == FocusPane::Chat,
+                        self.thinking,
+                    );
                     chat_state.visible_height = chat_inner.height.saturating_sub(2);
                     chat_component.set_show_logo_on_empty(true);
-                    chat_component.render(frame, chat_inner, chat_state, card_manager, subagent_list, connected, animation_frame);
+                    chat_component.set_capabilities(self.capabilities.clone());
+                    chat_component.render(
+                        frame,
+                        chat_inner,
+                        chat_state,
+                        card_manager,
+                        subagent_list,
+                        connected,
+                        animation_frame,
+                    );
 
                     // Activity (hashline only - cards are drawn inline in chat)
                     if activity_height > 0 {
@@ -2623,20 +2955,52 @@ impl App {
                     let composer_block = Block::bordered();
                     let composer_inner = composer_block.inner(main_layout[3]);
                     frame.render_widget(composer_block, main_layout[3]);
-                    crate::ui::borders::render_gradient_border(frame.buffer_mut(), main_layout[3], animation_frame, focus_pane == FocusPane::Composer, self.thinking);
+                    crate::ui::borders::render_gradient_border(
+                        frame.buffer_mut(),
+                        main_layout[3],
+                        animation_frame,
+                        focus_pane == FocusPane::Composer,
+                        self.thinking,
+                    );
                     input_composer.render_inner(frame, composer_inner);
 
                     // Toolbar with animated border
                     let toolbar_block = Block::bordered();
                     let toolbar_inner = toolbar_block.inner(main_layout[5]);
                     frame.render_widget(toolbar_block, main_layout[5]);
-                    crate::ui::borders::render_gradient_border(frame.buffer_mut(), main_layout[5], animation_frame, focus_pane == FocusPane::Toolbar, self.thinking);
+                    crate::ui::borders::render_gradient_border(
+                        frame.buffer_mut(),
+                        main_layout[5],
+                        animation_frame,
+                        focus_pane == FocusPane::Toolbar,
+                        self.thinking,
+                    );
                     toolbar.render(frame, toolbar_inner);
 
                     // Sine-wave loading footer (Phase 4 — Aetheric Shaders)
                     if wave_active {
-                        let usage = crate::protocol::types::TokenUsage::default().get_mock_detailed_usage();
-                        crate::ui::wave::render_wave_footer(frame, main_layout[4], wave_tick, usage);
+                        let session_manager = unsafe { &*session_manager_ptr };
+                        let usage = if let Some(session) = current_session_id
+                            .as_ref()
+                            .and_then(|id| session_manager.get_session(id))
+                        {
+                            let u = &session.total_usage;
+                            (
+                                u.prompt_category_tokens.unwrap_or(0),
+                                u.tool_call_tokens.unwrap_or(0),
+                                u.reasoning_tokens.unwrap_or(0),
+                                u.output_tokens.unwrap_or(0),
+                                u.failed_tool_call_tokens.unwrap_or(0),
+                            )
+                        } else {
+                            (0, 0, 0, 0, 0)
+                        };
+                        crate::ui::wave::render_wave_footer(
+                            frame,
+                            main_layout[4],
+                            wave_tick,
+                            usage,
+                        );
                     }
 
                     // Sidebar with animated border
@@ -2644,13 +3008,16 @@ impl App {
                         let sidebar_block = Block::bordered();
                         let sidebar_inner = sidebar_block.inner(sidebar_area);
                         frame.render_widget(sidebar_block, sidebar_area);
-                        crate::ui::borders::render_gradient_border(frame.buffer_mut(), sidebar_area, animation_frame, focus_pane == FocusPane::Sidebar, self.thinking);
+                        crate::ui::borders::render_gradient_border(
+                            frame.buffer_mut(),
+                            sidebar_area,
+                            animation_frame,
+                            focus_pane == FocusPane::Sidebar,
+                            self.thinking,
+                        );
                         let sidebar_chunks = Layout::default()
                             .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Min(1),
-                                Constraint::Max(n_sessions * 3 + 3),
-                            ])
+                            .constraints([Constraint::Min(1), Constraint::Max(n_sessions * 3 + 3)])
                             .split(sidebar_inner);
 
                         // Subagents
@@ -2660,7 +3027,12 @@ impl App {
                         }
 
                         // Session sidebar
-                        App::draw_session_sidebar_inner(frame, sidebar_chunks[1], config, session_manager_ptr);
+                        App::draw_session_sidebar_inner(
+                            frame,
+                            sidebar_chunks[1],
+                            config,
+                            session_manager_ptr,
+                        );
                     }
                 }
             }
@@ -2668,7 +3040,13 @@ impl App {
             // ── Overlays (render on top of everything) ──
             let overlay_area = frame.area();
             if session_picker.is_visible() {
-                session_picker.render(frame, overlay_area, animation_frame, current_session_id.as_deref(), self.thinking);
+                session_picker.render(
+                    frame,
+                    overlay_area,
+                    animation_frame,
+                    current_session_id.as_deref(),
+                    self.thinking,
+                );
             }
             if model_picker.is_visible() {
                 model_picker.render(frame, overlay_area, animation_frame, self.thinking);
@@ -2728,68 +3106,100 @@ impl App {
 
         // 1. Current Session Stats
         if let Some(session) = current_session {
-            lines.push(Line::from(vec![
-                Span::styled(" SESSION STATS ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
-            ]));
-            
+            lines.push(Line::from(vec![Span::styled(
+                " SESSION STATS ",
+                Style::default().bg(Color::Rgb(40, 40, 50)).bold(),
+            )]));
+
             let usage = &session.total_usage;
             lines.push(Line::from(vec![
                 Span::styled("  In:  ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:>8} tokens", usage.prompt_tokens), Style::default().fg(Color::Rgb(166, 226, 46))),
+                Span::styled(
+                    format!("{:>8} tokens", usage.prompt_tokens),
+                    Style::default().fg(Color::Rgb(166, 226, 46)),
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  Out: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:>8} tokens", usage.completion_tokens), Style::default().fg(Color::Rgb(253, 151, 31))),
+                Span::styled(
+                    format!("{:>8} tokens", usage.completion_tokens),
+                    Style::default().fg(Color::Rgb(253, 151, 31)),
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  Total:", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:>8} tokens", usage.total_tokens), Style::default().fg(Color::Rgb(102, 217, 239))),
+                Span::styled(
+                    format!("{:>8} tokens", usage.total_tokens),
+                    Style::default().fg(Color::Rgb(102, 217, 239)),
+                ),
             ]));
-            
+
             if let Some(read) = usage.cache_read_tokens {
                 if read > 0 {
                     lines.push(Line::from(vec![
                         Span::styled("  Cache Read:", Style::default().fg(Color::Gray)),
-                        Span::styled(format!("{:>8} tokens", read), Style::default().fg(Color::Rgb(174, 129, 255))),
+                        Span::styled(
+                            format!("{:>8} tokens", read),
+                            Style::default().fg(Color::Rgb(174, 129, 255)),
+                        ),
                     ]));
                 }
             }
 
             lines.push(Line::from(vec![
                 Span::styled("  Cost: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("   ${:.4}", session.total_cost), Style::default().fg(Color::Rgb(249, 38, 114)).bold()),
+                Span::styled(
+                    format!("   ${:.4}", session.total_cost),
+                    Style::default().fg(Color::Rgb(249, 38, 114)).bold(),
+                ),
             ]));
 
             // Tool call count in current session
-            let tool_calls = session.messages.to_vec().iter().filter(|m| m.is_tool()).count();
+            let tool_calls = session
+                .messages
+                .to_vec()
+                .iter()
+                .filter(|m| m.is_tool())
+                .count();
             lines.push(Line::from(vec![
                 Span::styled("  Tools: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:>9} calls", tool_calls), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{:>9} calls", tool_calls),
+                    Style::default().fg(Color::Yellow),
+                ),
             ]));
-            
+
             lines.push(Line::from(""));
-            
-            lines.push(Line::from(vec![
-                Span::styled(" CONTEXT WINDOW ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
-            ]));
-            
+
+            lines.push(Line::from(vec![Span::styled(
+                " CONTEXT WINDOW ",
+                Style::default().bg(Color::Rgb(40, 40, 50)).bold(),
+            )]));
+
             let total = usage.total_tokens;
             let limit = 128000; // Default assumption
             let pct = (total as f64 / limit as f64 * 100.0).min(100.0);
-            
+
             lines.push(Line::from(vec![
                 Span::styled("  Usage: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{:.1}%", pct), Style::default().fg(if pct > 80.0 { Color::Red } else { Color::Green })),
-                Span::styled(format!(" ({}k/{}k)", total / 1000, limit / 1000), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.1}%", pct),
+                    Style::default().fg(if pct > 80.0 { Color::Red } else { Color::Green }),
+                ),
+                Span::styled(
+                    format!(" ({}k/{}k)", total / 1000, limit / 1000),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]));
-            
+
             lines.push(Line::from(""));
         }
 
         // 2. Recent Sessions List
-        lines.push(Line::from(vec![
-            Span::styled(" RECENT SESSIONS ", Style::default().bg(Color::Rgb(40, 40, 50)).bold()),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            " RECENT SESSIONS ",
+            Style::default().bg(Color::Rgb(40, 40, 50)).bold(),
+        )]));
 
         for session in session_list.iter().take(8) {
             let name = session.name.as_deref().unwrap_or("Unnamed");
@@ -2873,7 +3283,8 @@ impl App {
         let mut msg = Message::system(format!("Subagent '{}' started: {}", agent_id, event.goal));
         msg.message_id = Some(format!("subagent:{agent_id}"));
         self.messages_mut().add_message(msg.clone());
-        self.chat_component.add_message(msg, &mut self.chat_state, &self.card_manager);
+        self.chat_component
+            .add_message(msg, &mut self.chat_state, &self.card_manager);
         Ok(())
     }
 
@@ -2970,7 +3381,7 @@ mod tests {
             thinking: false,
             reconnecting: false,
             reconnect_attempts: 0,
-            card_manager: CardManager::new(chat_colors_rgb),
+            card_manager: CardManager::new(chat_colors_rgb.clone()),
             subagent_list: SubagentList::new(),
             hashline_viewer: HashlineViewer::new(),
             gateway_process: None,
@@ -2978,18 +3389,18 @@ mod tests {
             input_mode: InputMode::Insert,
             current_input: String::new(),
             cursor_position: 0,
-            chat_component: ChatComponent::new(chat_colors_rgb, true),
+            chat_component: ChatComponent::new(chat_colors_rgb.clone(), true),
             chat_state: crate::ui::chat::ChatState::default(),
-            input_composer: InputComposer::new(chat_colors_rgb),
-            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
+            input_composer: InputComposer::new(chat_colors_rgb.clone()),
+            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb.clone()),
             banner: crate::ui::banner::Banner::default(),
-            prompt_manager: PromptManager::new(chat_colors_rgb),
+            prompt_manager: PromptManager::new(chat_colors_rgb.clone()),
             pending_approval_id: None,
             pending_clarify_id: None,
             pending_sudo_id: None,
             pending_secret_id: None,
-            completion_popup: CompletionPopup::new(chat_colors_rgb),
-            model_picker: ModelPicker::new(chat_colors_rgb),
+            completion_popup: CompletionPopup::new(chat_colors_rgb.clone()),
+            model_picker: ModelPicker::new(chat_colors_rgb.clone()),
             session_picker: SessionPicker::new(chat_colors_rgb),
             actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
@@ -3001,9 +3412,13 @@ mod tests {
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
+            clipboard: Box::new(crate::utils::clipboard::MockClipboard::new()),
+            capabilities: Capabilities::default(),
             last_completion_query: None,
             show_help: false,
             prefix_mode: false,
+            streaming_reasoning: String::new(),
+            streaming_message_id: None,
         };
     }
 
@@ -3025,7 +3440,7 @@ mod tests {
             thinking: false,
             reconnecting: false,
             reconnect_attempts: 0,
-            card_manager: CardManager::new(chat_colors_rgb),
+            card_manager: CardManager::new(chat_colors_rgb.clone()),
             subagent_list: SubagentList::new(),
             hashline_viewer: HashlineViewer::new(),
             gateway_process: None,
@@ -3033,18 +3448,18 @@ mod tests {
             input_mode: InputMode::Normal,
             current_input: String::new(),
             cursor_position: 0,
-            chat_component: ChatComponent::new(chat_colors_rgb, true),
+            chat_component: ChatComponent::new(chat_colors_rgb.clone(), true),
             chat_state: crate::ui::chat::ChatState::default(),
-            input_composer: InputComposer::new(chat_colors_rgb),
-            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb),
+            input_composer: InputComposer::new(chat_colors_rgb.clone()),
+            toolbar: Toolbar::new(theme_colors_rgb, chat_colors_rgb.clone()),
             banner: crate::ui::banner::Banner::default(),
-            prompt_manager: PromptManager::new(chat_colors_rgb),
+            prompt_manager: PromptManager::new(chat_colors_rgb.clone()),
             pending_approval_id: None,
             pending_clarify_id: None,
             pending_sudo_id: None,
             pending_secret_id: None,
-            completion_popup: CompletionPopup::new(chat_colors_rgb),
-            model_picker: ModelPicker::new(chat_colors_rgb),
+            completion_popup: CompletionPopup::new(chat_colors_rgb.clone()),
+            model_picker: ModelPicker::new(chat_colors_rgb.clone()),
             session_picker: SessionPicker::new(chat_colors_rgb),
             actual_activity_height: 0.0,
             mouse_context: MouseContext::new(),
@@ -3056,9 +3471,13 @@ mod tests {
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),
             shader_state: crate::ui::effects::ShaderState::new(),
+            clipboard: Box::new(crate::utils::clipboard::MockClipboard::new()),
+            capabilities: Capabilities::default(),
             last_completion_query: None,
             show_help: false,
             prefix_mode: false,
+            streaming_reasoning: String::new(),
+            streaming_message_id: None,
         };
         assert!(app.input_composer().get_input().is_empty());
         assert!(app.toolbar().input_mode() == InputMode::Normal);

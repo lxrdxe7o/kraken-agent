@@ -140,7 +140,14 @@ impl SessionPicker {
     }
 
     /// Render the centered session picker popup
-    pub fn render(&self, frame: &mut Frame, area: Rect, animation_frame: u64, current_session_id: Option<&str>, is_running: bool) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        animation_frame: u64,
+        current_session_id: Option<&str>,
+        is_running: bool,
+    ) {
         if !self.visible || self.sessions.is_empty() {
             return;
         }
@@ -176,10 +183,10 @@ impl SessionPicker {
                 let s = &self.sessions[session_i];
                 let is_active = current_session_id.map_or(false, |id| id == s.id);
                 let is_selected = list_i == self.selected_index;
-                
+
                 let active_indicator = if is_active { "◈" } else { "◇" };
                 let select_indicator = if is_selected { ">" } else { " " };
-                
+
                 let formatted_time = chrono::DateTime::from_timestamp(s.started_at, 0)
                     .map_or("Unknown".to_string(), |dt| {
                         dt.format("%Y-%m-%d %H:%M").to_string()
@@ -193,7 +200,12 @@ impl SessionPicker {
 
                 let line1 = format!(
                     "{} {} {} (msgs: {}, time: {}, source: {})",
-                    select_indicator, active_indicator, title, s.message_count, formatted_time, source
+                    select_indicator,
+                    active_indicator,
+                    title,
+                    s.message_count,
+                    formatted_time,
+                    source
                 );
 
                 // Crop preview to fit inside popup comfortably
@@ -240,7 +252,13 @@ impl SessionPicker {
         frame.render_widget(list, popup_area);
 
         // Render animated gradient border over the block
-        crate::ui::borders::render_gradient_border(frame.buffer_mut(), popup_area, animation_frame, true, is_running);
+        crate::ui::borders::render_gradient_border(
+            frame.buffer_mut(),
+            popup_area,
+            animation_frame,
+            true,
+            is_running,
+        );
     }
 }
 
@@ -249,20 +267,7 @@ mod tests {
     use super::*;
 
     fn create_test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: Color::Reset,
-            user_text: Color::Reset,
-            assistant_bg: Color::Reset,
-            assistant_text: Color::Reset,
-            system_bg: Color::Reset,
-            system_text: Color::Reset,
-            tool_bg: Color::Reset,
-            tool_text: Color::Reset,
-            code_bg: Color::Reset,
-            code_text: Color::Reset,
-            border: Color::Reset,
-            timestamp: Color::Reset,
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

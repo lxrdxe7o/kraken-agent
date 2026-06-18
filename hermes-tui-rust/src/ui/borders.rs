@@ -159,11 +159,6 @@ fn get_color(x: u16, y: u16, width: u16, height: u16, t: f64, is_running: bool) 
         g = g_base * 0.1 + p1 * 0.8 + p2 * 0.2 + p3 * 1.0 + p4 * 1.0 + flare;
         b = b_base * 0.1 + p1 * 1.0 + p2 * 0.8 + p3 * 1.0 + p4 * 0.1 + flare;
 
-        let flicker = if (t * 30.0).sin() > 0.8 { 1.2 } else { 1.0 };
-        r *= flicker;
-        g *= flicker;
-        b *= flicker;
-
     } else {
         // IDLE/FOCUSED STATE: Majestic, calm, ethereal glow. Overlapping sine waves.
         

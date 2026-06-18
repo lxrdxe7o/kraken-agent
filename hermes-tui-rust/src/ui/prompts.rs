@@ -67,24 +67,7 @@ impl ApprovalPrompt {
 
     /// Create a new approval prompt with defaults
     pub fn with_defaults(message: impl Into<String>) -> Self {
-        Self::new(
-            message,
-            None,
-            ChatColorsRgb {
-                user_bg: ratatui::style::Color::Indexed(238),
-                user_text: ratatui::style::Color::Indexed(252),
-                assistant_bg: ratatui::style::Color::Indexed(236),
-                assistant_text: ratatui::style::Color::Indexed(248),
-                system_bg: ratatui::style::Color::Indexed(235),
-                system_text: ratatui::style::Color::Indexed(245),
-                tool_bg: ratatui::style::Color::Indexed(237),
-                tool_text: ratatui::style::Color::Indexed(243),
-                code_bg: ratatui::style::Color::Indexed(233),
-                code_text: ratatui::style::Color::Indexed(252),
-                border: ratatui::style::Color::Indexed(240),
-                timestamp: ratatui::style::Color::Indexed(246),
-            },
-        )
+        Self::new(message, None, ChatColorsRgb::default())
     }
 
     /// Get the message
@@ -259,24 +242,7 @@ impl ClarifyPrompt {
 
     /// Create a new clarification prompt with defaults
     pub fn with_defaults(message: impl Into<String>) -> Self {
-        Self::new(
-            message,
-            None,
-            ChatColorsRgb {
-                user_bg: ratatui::style::Color::Indexed(238),
-                user_text: ratatui::style::Color::Indexed(252),
-                assistant_bg: ratatui::style::Color::Indexed(236),
-                assistant_text: ratatui::style::Color::Indexed(248),
-                system_bg: ratatui::style::Color::Indexed(235),
-                system_text: ratatui::style::Color::Indexed(245),
-                tool_bg: ratatui::style::Color::Indexed(237),
-                tool_text: ratatui::style::Color::Indexed(243),
-                code_bg: ratatui::style::Color::Indexed(233),
-                code_text: ratatui::style::Color::Indexed(252),
-                border: ratatui::style::Color::Indexed(240),
-                timestamp: ratatui::style::Color::Indexed(246),
-            },
-        )
+        Self::new(message, None, ChatColorsRgb::default())
     }
 
     /// Get the message
@@ -518,23 +484,7 @@ impl SecretPrompt {
 
     /// Create a new secret prompt with defaults
     pub fn with_defaults(message: impl Into<String>) -> Self {
-        Self::new(
-            message,
-            ChatColorsRgb {
-                user_bg: ratatui::style::Color::Indexed(238),
-                user_text: ratatui::style::Color::Indexed(252),
-                assistant_bg: ratatui::style::Color::Indexed(236),
-                assistant_text: ratatui::style::Color::Indexed(248),
-                system_bg: ratatui::style::Color::Indexed(235),
-                system_text: ratatui::style::Color::Indexed(245),
-                tool_bg: ratatui::style::Color::Indexed(237),
-                tool_text: ratatui::style::Color::Indexed(243),
-                code_bg: ratatui::style::Color::Indexed(233),
-                code_text: ratatui::style::Color::Indexed(252),
-                border: ratatui::style::Color::Indexed(240),
-                timestamp: ratatui::style::Color::Indexed(246),
-            },
-        )
+        Self::new(message, ChatColorsRgb::default())
     }
 
     /// Get the message
@@ -692,20 +642,7 @@ impl PromptManager {
     /// Create a new prompt manager with defaults
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        })
+        Self::new(ChatColorsRgb::default())
     }
 
     /// Check if any prompt is active
@@ -752,21 +689,21 @@ impl PromptManager {
     pub fn show_approval(&mut self, message: impl Into<String>, tool_name: Option<String>) {
         self.clarify_prompt = None;
         self.secret_prompt = None;
-        self.approval_prompt = Some(ApprovalPrompt::new(message, tool_name, self.colors));
+        self.approval_prompt = Some(ApprovalPrompt::new(message, tool_name, self.colors.clone()));
     }
 
     /// Show a clarification prompt
     pub fn show_clarify(&mut self, message: impl Into<String>, choices: Option<Vec<String>>) {
         self.approval_prompt = None;
         self.secret_prompt = None;
-        self.clarify_prompt = Some(ClarifyPrompt::new(message, choices, self.colors));
+        self.clarify_prompt = Some(ClarifyPrompt::new(message, choices, self.colors.clone()));
     }
 
     /// Show a secret prompt
     pub fn show_secret(&mut self, message: impl Into<String>) {
         self.approval_prompt = None;
         self.clarify_prompt = None;
-        self.secret_prompt = Some(SecretPrompt::new(message, self.colors));
+        self.secret_prompt = Some(SecretPrompt::new(message, self.colors.clone()));
     }
 
     /// Approve the current approval prompt
@@ -844,12 +781,12 @@ impl PromptManager {
 
     /// Set the colors for all future prompts
     pub fn set_colors(&mut self, colors: ChatColorsRgb) {
-        self.colors = colors;
+        self.colors = colors.clone();
         if let Some(prompt) = &mut self.approval_prompt {
-            prompt.set_colors(colors);
+            prompt.set_colors(colors.clone());
         }
         if let Some(prompt) = &mut self.clarify_prompt {
-            prompt.set_colors(colors);
+            prompt.set_colors(colors.clone());
         }
         if let Some(prompt) = &mut self.secret_prompt {
             prompt.set_colors(colors);
@@ -886,20 +823,7 @@ mod tests {
     use super::*;
 
     fn create_test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

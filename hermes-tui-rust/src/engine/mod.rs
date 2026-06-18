@@ -63,7 +63,7 @@ pub fn poll_timeout() -> Duration {
     if active > 0 {
         Duration::from_millis(16) // ~60 FPS
     } else {
-        Duration::from_millis(16) // light idle, still fast enough for gateway I/O
+        Duration::from_millis(100) // gentle idle, still fast enough for gateway I/O
     }
 }
 
@@ -82,24 +82,17 @@ pub fn draw_sync<F>(
 where
     F: FnOnce(&mut ratatui::Frame),
 {
-    // Hide cursor to prevent ghosting during sync
-    execute!(io::stdout(), crossterm::cursor::Hide)?;
-
     // Begin synchronized update
     execute!(io::stdout(), BeginSynchronizedUpdate)?;
 
     // Perform the actual widget rendering
-    terminal.draw(draw_fn)?;
+    let res = terminal.draw(draw_fn);
 
     // End synchronized update
     execute!(io::stdout(), EndSynchronizedUpdate)?;
-
-    // Show cursor again - Ratatui's Terminal::draw will have set the correct
-    // cursor position if frame.set_cursor_position was called.
-    execute!(io::stdout(), crossterm::cursor::Show)?;
     io::stdout().flush()?;
 
-    Ok(())
+    res.map(|_| ()).map_err(anyhow::Error::from)
 }
 
 // ============================================================================
@@ -137,7 +130,7 @@ mod tests {
     fn test_poll_timeout() {
         // Ensure restoring state after test
         let before = ACTIVE_ANIMATIONS.load(Ordering::Relaxed);
-        assert_eq!(poll_timeout(), Duration::from_millis(16));
+        assert_eq!(poll_timeout(), Duration::from_millis(100));
         ACTIVE_ANIMATIONS.store(5, Ordering::Relaxed);
         assert_eq!(poll_timeout(), Duration::from_millis(16));
         ACTIVE_ANIMATIONS.store(before, Ordering::Relaxed);

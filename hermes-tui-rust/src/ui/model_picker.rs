@@ -25,7 +25,7 @@ pub enum ModelPickerStage {
 }
 
 /// Model picker popup component
-#[derive(Debug, Clone) ]
+#[derive(Debug, Clone)]
 pub struct ModelPicker {
     /// Providers to select from
     providers: Vec<ModelOptionProvider>,
@@ -215,18 +215,30 @@ impl ModelPicker {
     }
 
     /// Render the model picker popup
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, animation_frame: u64, is_running: bool) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        animation_frame: u64,
+        is_running: bool,
+    ) {
         if !self.visible {
             return;
         }
 
         // Center popup
         let popup_area = self.get_popup_rect(area);
-        
+
         frame.render_widget(Clear, popup_area);
-        
+
         // Render animated gradient border
-        render_gradient_border(frame.buffer_mut(), popup_area, animation_frame, true, is_running);
+        render_gradient_border(
+            frame.buffer_mut(),
+            popup_area,
+            animation_frame,
+            true,
+            is_running,
+        );
 
         if self.loading {
             self.render_loading(frame, popup_area);
@@ -244,13 +256,22 @@ impl ModelPicker {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect) {
-        let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 2 });
+        let inner = area.inner(ratatui::layout::Margin {
+            horizontal: 2,
+            vertical: 2,
+        });
         let text = vec![
             Line::from(""),
-            Line::from(" Fetching model options from gateway... ").alignment(ratatui::layout::Alignment::Center),
-            Line::from(" Please wait... ").alignment(ratatui::layout::Alignment::Center).style(Style::default().fg(Color::Gray).italic()),
+            Line::from(" Fetching model options from gateway... ")
+                .alignment(ratatui::layout::Alignment::Center),
+            Line::from(" Please wait... ")
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(Style::default().fg(Color::Gray).italic()),
         ];
-        frame.render_widget(ratatui::widgets::Paragraph::new(text).block(Block::default()), inner);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(text).block(Block::default()),
+            inner,
+        );
     }
 
     fn get_popup_rect(&self, area: Rect) -> Rect {
@@ -262,8 +283,11 @@ impl ModelPicker {
     }
 
     fn render_providers(&mut self, frame: &mut Frame, area: Rect) {
-        let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 2 });
-        
+        let inner = area.inner(ratatui::layout::Margin {
+            horizontal: 2,
+            vertical: 2,
+        });
+
         let items: Vec<ListItem> = self
             .providers
             .iter()
@@ -275,21 +299,37 @@ impl ModelPicker {
                     .total_models
                     .or(p.models.as_ref().map(std::vec::Vec::len))
                     .unwrap_or(0);
-                
+
                 let icon = if current { " ◈ " } else { " ◇ " };
-                let auth_status = if auth { 
-                    Span::styled(" AUTH ", Style::default().fg(Color::Green).bg(Color::Rgb(30, 40, 30)))
-                } else { 
-                    Span::styled(" NOAUTH ", Style::default().fg(Color::Red).bg(Color::Rgb(40, 30, 30)))
+                let auth_status = if auth {
+                    Span::styled(
+                        " AUTH ",
+                        Style::default().fg(Color::Green).bg(Color::Rgb(30, 40, 30)),
+                    )
+                } else {
+                    Span::styled(
+                        " NOAUTH ",
+                        Style::default().fg(Color::Red).bg(Color::Rgb(40, 30, 30)),
+                    )
                 };
 
                 let content = Line::from(vec![
-                    Span::styled(icon, Style::default().fg(if i == self.provider_index { Color::Yellow } else { Color::DarkGray })),
+                    Span::styled(
+                        icon,
+                        Style::default().fg(if i == self.provider_index {
+                            Color::Yellow
+                        } else {
+                            Color::DarkGray
+                        }),
+                    ),
                     Span::styled(format!("{:<15}", p.name), Style::default().bold()),
                     Span::raw(" │ "),
                     auth_status,
                     Span::raw(" │ "),
-                    Span::styled(format!("{:>3} models", model_count), Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        format!("{:>3} models", model_count),
+                        Style::default().fg(Color::Gray),
+                    ),
                 ]);
 
                 let style = if i == self.provider_index {
@@ -297,7 +337,7 @@ impl ModelPicker {
                 } else {
                     Style::default()
                 };
-                
+
                 ListItem::new(content).style(style)
             })
             .collect();
@@ -311,16 +351,20 @@ impl ModelPicker {
 
         // Render helper hints
         let hints = Line::from(vec![
-            " ↑↓ ".bold().yellow(), "navigate".into(),
+            " ↑↓ ".bold().yellow(),
+            "navigate".into(),
             " │ ".into(),
-            " Enter ".bold().yellow(), "select provider".into(),
+            " Enter ".bold().yellow(),
+            "select provider".into(),
             " │ ".into(),
-            " Esc ".bold().yellow(), "cancel".into(),
-        ]).alignment(ratatui::layout::Alignment::Center);
-        
+            " Esc ".bold().yellow(),
+            "cancel".into(),
+        ])
+        .alignment(ratatui::layout::Alignment::Center);
+
         frame.render_widget(
             ratatui::widgets::Paragraph::new(hints),
-            Rect::new(area.x, area.y + area.height - 2, area.width, 1)
+            Rect::new(area.x, area.y + area.height - 2, area.width, 1),
         );
     }
 
@@ -334,8 +378,11 @@ impl ModelPicker {
             None => return,
         };
 
-        let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 2 });
-        
+        let inner = area.inner(ratatui::layout::Margin {
+            horizontal: 2,
+            vertical: 2,
+        });
+
         let header = Row::new(vec!["  #", "  Model Name"])
             .style(Style::default().fg(Color::Yellow).bold())
             .height(1)
@@ -346,24 +393,25 @@ impl ModelPicker {
             .enumerate()
             .map(|(i, m)| {
                 let style = if i == self.model_index {
-                    Style::default().fg(Color::Yellow).bg(Color::Rgb(40, 40, 50)).bold()
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .bg(Color::Rgb(40, 40, 50))
+                        .bold()
                 } else {
                     Style::default()
                 };
-                
+
                 let selector = if i == self.model_index { " > " } else { "   " };
-                
+
                 Row::new(vec![
                     format!("  {:02}", i + 1),
                     format!("{}{}", selector, m),
-                ]).style(style)
+                ])
+                .style(style)
             })
             .collect();
 
-        let widths = [
-            Constraint::Length(6),
-            Constraint::Min(40),
-        ];
+        let widths = [Constraint::Length(6), Constraint::Min(40)];
 
         let title = format!(" MODELS: {} ", provider.name.to_uppercase());
         let block = Block::default()
@@ -374,21 +422,25 @@ impl ModelPicker {
             .header(header)
             .block(block)
             .column_spacing(2);
-            
+
         frame.render_stateful_widget(table, inner, &mut self.model_state);
 
         // Render helper hints
         let hints = Line::from(vec![
-            " ↑↓ ".bold().yellow(), "navigate".into(),
+            " ↑↓ ".bold().yellow(),
+            "navigate".into(),
             " │ ".into(),
-            " Enter ".bold().yellow(), "apply model".into(),
+            " Enter ".bold().yellow(),
+            "apply model".into(),
             " │ ".into(),
-            " Esc ".bold().yellow(), "back".into(),
-        ]).alignment(ratatui::layout::Alignment::Center);
-        
+            " Esc ".bold().yellow(),
+            "back".into(),
+        ])
+        .alignment(ratatui::layout::Alignment::Center);
+
         frame.render_widget(
             ratatui::widgets::Paragraph::new(hints),
-            Rect::new(area.x, area.y + area.height - 2, area.width, 1)
+            Rect::new(area.x, area.y + area.height - 2, area.width, 1),
         );
     }
 }

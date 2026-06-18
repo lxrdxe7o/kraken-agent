@@ -3,6 +3,7 @@
 //! This module contains utility functions for text, ANSI, syntax highlighting, and other helpers.
 
 pub mod ansi;
+pub mod clipboard;
 pub mod cursor;
 pub mod markdown;
 pub mod rope;

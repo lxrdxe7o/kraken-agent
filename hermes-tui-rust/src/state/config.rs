@@ -202,6 +202,34 @@ pub struct ChatColors {
     pub border: SerialColor,
     #[serde(default = "default_timestamp")]
     pub timestamp: SerialColor,
+    #[serde(default = "default_selection_bg")]
+    pub selection_bg: SerialColor,
+    #[serde(default = "default_selection_fg")]
+    pub selection_fg: SerialColor,
+    #[serde(default = "default_selection_accent")]
+    pub selection_accent: SerialColor,
+    #[serde(default = "default_accent_warning")]
+    pub accent_warning: SerialColor,
+    #[serde(default = "default_accent_reasoning")]
+    pub accent_reasoning: SerialColor,
+    #[serde(default = "default_accent_response_separator")]
+    pub accent_response_separator: SerialColor,
+    #[serde(default = "default_user_bubble_border")]
+    pub user_bubble_border: SerialColor,
+    #[serde(default = "default_pill_bg")]
+    pub pill_bg: SerialColor,
+    #[serde(default = "default_pill_fg")]
+    pub pill_fg: SerialColor,
+    #[serde(default = "default_role_glyph_user")]
+    pub role_glyph_user: String,
+    #[serde(default = "default_role_glyph_assistant")]
+    pub role_glyph_assistant: String,
+    #[serde(default = "default_role_glyph_system")]
+    pub role_glyph_system: String,
+    #[serde(default = "default_role_glyph_tool")]
+    pub role_glyph_tool: String,
+    #[serde(default = "default_hero_border")]
+    pub hero_border: SerialColor,
 }
 
 fn default_user_bg() -> SerialColor {
@@ -240,6 +268,56 @@ fn default_border() -> SerialColor {
 fn default_timestamp() -> SerialColor {
     SerialColor::Index(246)
 }
+fn default_selection_bg() -> SerialColor {
+    SerialColor::Index(60)
+}
+fn default_selection_fg() -> SerialColor {
+    SerialColor::Named("black".to_string())
+}
+fn default_selection_accent() -> SerialColor {
+    SerialColor::Named("yellow".to_string())
+}
+fn default_accent_warning() -> SerialColor {
+    SerialColor::Named("yellow".to_string())
+}
+fn default_accent_reasoning() -> SerialColor {
+    SerialColor::Rgb {
+        r: 174,
+        g: 129,
+        b: 255,
+    }
+}
+fn default_accent_response_separator() -> SerialColor {
+    SerialColor::Index(240)
+}
+fn default_user_bubble_border() -> SerialColor {
+    SerialColor::Index(244)
+}
+fn default_pill_bg() -> SerialColor {
+    SerialColor::Index(240)
+}
+fn default_pill_fg() -> SerialColor {
+    SerialColor::Named("white".to_string())
+}
+fn default_role_glyph_user() -> String {
+    " 👤 ".to_string()
+}
+fn default_role_glyph_assistant() -> String {
+    " 🤖 ".to_string()
+}
+fn default_role_glyph_system() -> String {
+    " ⚙️ ".to_string()
+}
+fn default_role_glyph_tool() -> String {
+    " 🛠️ ".to_string()
+}
+fn default_hero_border() -> SerialColor {
+    SerialColor::Rgb {
+        r: 230,
+        g: 219,
+        b: 116,
+    }
+}
 
 impl Default for ChatColors {
     fn default() -> Self {
@@ -256,6 +334,20 @@ impl Default for ChatColors {
             code_text: default_code_text(),
             border: default_border(),
             timestamp: default_timestamp(),
+            selection_bg: default_selection_bg(),
+            selection_fg: default_selection_fg(),
+            selection_accent: default_selection_accent(),
+            accent_warning: default_accent_warning(),
+            accent_reasoning: default_accent_reasoning(),
+            accent_response_separator: default_accent_response_separator(),
+            user_bubble_border: default_user_bubble_border(),
+            pill_bg: default_pill_bg(),
+            pill_fg: default_pill_fg(),
+            role_glyph_user: default_role_glyph_user(),
+            role_glyph_assistant: default_role_glyph_assistant(),
+            role_glyph_system: default_role_glyph_system(),
+            role_glyph_tool: default_role_glyph_tool(),
+            hero_border: default_hero_border(),
         }
     }
 }
@@ -277,12 +369,26 @@ impl ChatColors {
             code_text: Color::from(self.code_text.clone()),
             border: Color::from(self.border.clone()),
             timestamp: Color::from(self.timestamp.clone()),
+            selection_bg: Color::from(self.selection_bg.clone()),
+            selection_fg: Color::from(self.selection_fg.clone()),
+            selection_accent: Color::from(self.selection_accent.clone()),
+            accent_warning: Color::from(self.accent_warning.clone()),
+            accent_reasoning: Color::from(self.accent_reasoning.clone()),
+            accent_response_separator: Color::from(self.accent_response_separator.clone()),
+            user_bubble_border: Color::from(self.user_bubble_border.clone()),
+            pill_bg: Color::from(self.pill_bg.clone()),
+            pill_fg: Color::from(self.pill_fg.clone()),
+            role_glyph_user: self.role_glyph_user.clone(),
+            role_glyph_assistant: self.role_glyph_assistant.clone(),
+            role_glyph_system: self.role_glyph_system.clone(),
+            role_glyph_tool: self.role_glyph_tool.clone(),
+            hero_border: Color::from(self.hero_border.clone()),
         }
     }
 }
 
 /// Runtime color struct using ratatui Color (not serializable)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatColorsRgb {
     pub user_bg: Color,
     pub user_text: Color,
@@ -296,6 +402,26 @@ pub struct ChatColorsRgb {
     pub code_text: Color,
     pub border: Color,
     pub timestamp: Color,
+    pub selection_bg: Color,
+    pub selection_fg: Color,
+    pub selection_accent: Color,
+    pub accent_warning: Color,
+    pub accent_reasoning: Color,
+    pub accent_response_separator: Color,
+    pub user_bubble_border: Color,
+    pub pill_bg: Color,
+    pub pill_fg: Color,
+    pub role_glyph_user: String,
+    pub role_glyph_assistant: String,
+    pub role_glyph_system: String,
+    pub role_glyph_tool: String,
+    pub hero_border: Color,
+}
+
+impl Default for ChatColorsRgb {
+    fn default() -> Self {
+        ChatColors::default().to_rgb_colors()
+    }
 }
 
 /// Theme configuration
@@ -348,12 +474,7 @@ pub enum BuiltinTheme {
 impl BuiltinTheme {
     #[must_use]
     pub fn all() -> &'static [Self] {
-        &[
-            Self::Default,
-            Self::Dark,
-            Self::Light,
-            Self::Gruvbox,
-        ]
+        &[Self::Default, Self::Dark, Self::Light, Self::Gruvbox]
     }
 
     #[must_use]
@@ -412,6 +533,7 @@ fn dark_theme() -> ThemeConfig {
             code_text: SerialColor::Named("white".to_string()),
             border: SerialColor::Index(59),
             timestamp: SerialColor::Index(245),
+            ..ChatColors::default()
         },
     }
 }
@@ -433,6 +555,7 @@ fn light_theme() -> ThemeConfig {
             code_text: SerialColor::Named("black".to_string()),
             border: SerialColor::Index(248),
             timestamp: SerialColor::Index(246),
+            ..ChatColors::default()
         },
     }
 }
@@ -543,6 +666,7 @@ fn gruvbox_theme() -> ThemeConfig {
                 g: 131,
                 b: 116,
             }, // #928374
+            ..ChatColors::default()
         },
     }
 }

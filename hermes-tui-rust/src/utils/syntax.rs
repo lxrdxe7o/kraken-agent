@@ -47,17 +47,17 @@ impl ScopePalette {
     pub const fn catppuccin() -> Self {
         Self {
             colors: [
-                Color::Rgb(202, 211, 245),  // 0 text
-                Color::Rgb(137, 180, 250),  // 1 keyword
-                Color::Rgb(166, 218, 149),  // 2 string
-                Color::Rgb(128, 135, 154),  // 3 comment
-                Color::Rgb(250, 189, 47),   // 4 type
-                Color::Rgb(138, 173, 244),  // 5 function
-                Color::Rgb(245, 169, 127),  // 6 number
-                Color::Rgb(198, 212, 240),  // 7 operator
-                Color::Rgb(198, 160, 246),  // 8 preproc
-                Color::Rgb(250, 200, 90),   // 9 header
-                Color::Rgb(137, 220, 235),  // 10 link
+                Color::Rgb(202, 211, 245), // 0 text
+                Color::Rgb(137, 180, 250), // 1 keyword
+                Color::Rgb(166, 218, 149), // 2 string
+                Color::Rgb(128, 135, 154), // 3 comment
+                Color::Rgb(250, 189, 47),  // 4 type
+                Color::Rgb(138, 173, 244), // 5 function
+                Color::Rgb(245, 169, 127), // 6 number
+                Color::Rgb(198, 212, 240), // 7 operator
+                Color::Rgb(198, 160, 246), // 8 preproc
+                Color::Rgb(250, 200, 90),  // 9 header
+                Color::Rgb(137, 220, 235), // 10 link
             ],
         }
     }

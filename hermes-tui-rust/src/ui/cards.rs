@@ -401,7 +401,13 @@ impl CardComponent {
         let is_running_tool = is_tool && self.status == Some(ToolStatus::Running);
 
         // Render the gradient border (animated if running)
-        crate::ui::borders::render_gradient_border(frame.buffer_mut(), area, animation_frame, is_running_tool, is_running_tool);
+        crate::ui::borders::render_gradient_border(
+            frame.buffer_mut(),
+            area,
+            animation_frame,
+            is_running_tool,
+            is_running_tool,
+        );
 
         // Create a block for the title and background
         let block = Block::default()
@@ -433,12 +439,13 @@ impl CardComponent {
                     Span::styled(args, Style::default().fg(self.colors.code_text)),
                 ]));
             }
-            
+
             if let Some(res) = &self.result {
-                lines.push(Line::from(vec![
-                    Span::styled(" Result: ", Style::default().fg(Color::Gray).italic()),
-                ]));
-                
+                lines.push(Line::from(vec![Span::styled(
+                    " Result: ",
+                    Style::default().fg(Color::Gray).italic(),
+                )]));
+
                 // Parse ANSI codes in result
                 let text = crate::utils::ansi::ansi_to_text(res);
                 for line in text.lines {
@@ -454,13 +461,19 @@ impl CardComponent {
             } else if self.status == Some(ToolStatus::Running) {
                 lines.push(Line::from(vec![
                     Span::raw("   "),
-                    Span::styled(Self::running_spinner(animation_frame as u32 / 5), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        Self::running_spinner(animation_frame as u32 / 5),
+                        Style::default().fg(Color::Yellow),
+                    ),
                 ]));
             }
         } else {
             // Standard Card View
             for line in self.content.lines() {
-                lines.push(Line::from(Span::styled(line, Style::new().fg(self.text_color()))));
+                lines.push(Line::from(Span::styled(
+                    line,
+                    Style::new().fg(self.text_color()),
+                )));
             }
         }
 
@@ -496,20 +509,7 @@ impl CardManager {
     /// Create a new card manager with defaults
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        })
+        Self::new(ChatColorsRgb::default())
     }
 
     /// Add a card
@@ -551,33 +551,33 @@ impl CardManager {
 
     /// Add an info card
     pub fn add_info(&mut self, title: impl Into<String>, content: impl Into<String>) {
-        self.add_card(CardComponent::info(title, content, self.colors));
+        self.add_card(CardComponent::info(title, content, self.colors.clone()));
     }
 
     /// Add a success card
     pub fn add_success(&mut self, title: impl Into<String>, content: impl Into<String>) {
-        self.add_card(CardComponent::success(title, content, self.colors));
+        self.add_card(CardComponent::success(title, content, self.colors.clone()));
     }
 
     /// Add a warning card
     pub fn add_warning(&mut self, title: impl Into<String>, content: impl Into<String>) {
-        self.add_card(CardComponent::warning(title, content, self.colors));
+        self.add_card(CardComponent::warning(title, content, self.colors.clone()));
     }
 
     /// Add an error card
     pub fn add_error(&mut self, title: impl Into<String>, content: impl Into<String>) {
-        self.add_card(CardComponent::error(title, content, self.colors));
+        self.add_card(CardComponent::error(title, content, self.colors.clone()));
     }
 
     /// Add a tool card
     pub fn add_tool(&mut self, title: impl Into<String>, content: impl Into<String>) {
-        self.add_card(CardComponent::tool(title, content, self.colors));
+        self.add_card(CardComponent::tool(title, content, self.colors.clone()));
     }
 
     /// Add a tool card from `ToolCardData`
     pub fn add_tool_card(&mut self, data: ToolCardData) {
         // Use 0 as initial frame; the tick_spinners loop will advance it
-        self.add_card(CardComponent::tool_card(&data, self.colors, 0));
+        self.add_card(CardComponent::tool_card(&data, self.colors.clone(), 0));
     }
 
     /// Update the status of an existing tool card by `call_id`
@@ -652,10 +652,10 @@ impl CardManager {
 
     /// Update colors for all existing cards
     pub fn update_colors(&mut self, colors: ChatColorsRgb) {
-        self.colors = colors;
         for card in &mut self.cards {
-            card.set_colors(colors);
+            card.set_colors(colors.clone());
         }
+        self.colors = colors;
     }
 
     /// Render all cards in a stack (vertical layout)
@@ -684,20 +684,7 @@ mod tests {
     use super::*;
 
     fn create_test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

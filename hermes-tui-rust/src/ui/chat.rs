@@ -16,10 +16,10 @@ use ratatui::{
 };
 
 use crate::protocol::types::MessageRole;
-use crate::state::{config::ChatColorsRgb, messages::Message};
+use crate::state::{capabilities::Capabilities, config::ChatColorsRgb, messages::Message};
 use crate::ui::cards::CardManager;
 use crate::ui::subagent::{SubagentInfo, SubagentList};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 /// Chat state for displaying conversation messages
@@ -39,6 +39,12 @@ pub struct ChatState {
     pub selected_index: Option<usize>,
     /// Tracking which system messages are expanded (by `message_id`)
     pub expanded_systems: HashSet<String>,
+    /// Number of new messages that arrived while the user was scrolled
+    /// up. Drives the "↓ N new" pill.
+    pub pending_new_count: u16,
+    /// Whether the scroll is currently at the bottom. Recomputed on each
+    /// render based on `scroll_position + visible_height` vs total height.
+    pub at_bottom: bool,
 }
 
 impl ChatState {
@@ -47,12 +53,55 @@ impl ChatState {
     }
 }
 
-/// Chat component for displaying conversation messages
-///
-/// This component renders a scrollable chat transcript with proper
-/// formatting, colors, and timestamps. Supports message selection,
-/// inline tool cards, and subagent display.
-#[derive(Debug, Clone)]
+// ============================================================================
+// Message actions (Phase 5)
+// ============================================================================
+
+/// An action that can be performed on a chat message. The component decides
+/// which actions are available for which role; the app loop performs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatAction {
+    /// Copy the message content to the clipboard.
+    Copy,
+    /// Replace the composer input with the message content.
+    YankToComposer,
+    /// Truncate the session at the message and re-submit.
+    Regenerate,
+    /// Edit a user message in place; resubmit on save.
+    Edit,
+    /// Drop this message and everything after it.
+    Delete,
+    /// Create a new session branched at this message.
+    Branch,
+}
+
+/// What the chat component wants the app to do. Returned by
+/// `ChatComponent::perform_action`; consumed by the app loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatCommand {
+    /// Insert this text into the composer buffer.
+    Yank(String),
+    /// Copy this text to the clipboard.
+    Copy(String),
+    /// Edit a message: replace its content and resubmit.
+    Edit {
+        message_id: String,
+        new_content: String,
+    },
+    /// Re-submit by truncating the session at the given message index.
+    Regenerate { from_index: usize },
+    /// Drop everything from the given index forward.
+    Delete { from_index: usize },
+    /// Create a new session branched at the given message id with this content.
+    Branch {
+        from_message_id: String,
+        content: String,
+    },
+    /// No action.
+    Noop,
+}
+
+#[derive(Debug)]
 pub struct ChatComponent {
     /// Messages to display
     messages: Vec<Message>,
@@ -62,6 +111,21 @@ pub struct ChatComponent {
     show_timestamps: bool,
     /// Whether to show the Kraken ASCII logo when the chat is empty
     show_logo_on_empty: Cell<bool>,
+    /// Monotonic version counter, bumped on any message mutation.
+    height_version: u64,
+    /// Cached per-message heights; `RefCell` because render is `&self`.
+    height_cache: RefCell<HeightCache>,
+    /// Gateway-reported capabilities shown on the empty-state landing page.
+    capabilities: RefCell<Capabilities>,
+}
+
+/// Cached per-message heights used by the chat renderer.
+#[derive(Debug, Clone, Default)]
+struct HeightCache {
+    version: u64,
+    width: u16,
+    heights: Vec<u16>,
+    total: u64,
 }
 
 impl ChatComponent {
@@ -73,35 +137,23 @@ impl ChatComponent {
             colors,
             show_timestamps,
             show_logo_on_empty: Cell::new(true),
+            height_version: 0,
+            height_cache: RefCell::new(HeightCache::default()),
+            capabilities: RefCell::new(Capabilities::default()),
         }
     }
 
     /// Create a new chat component with all defaults
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(
-            ChatColorsRgb {
-                user_bg: ratatui::style::Color::Indexed(238),
-                user_text: ratatui::style::Color::Indexed(252),
-                assistant_bg: ratatui::style::Color::Indexed(236),
-                assistant_text: ratatui::style::Color::Indexed(248),
-                system_bg: ratatui::style::Color::Indexed(235),
-                system_text: ratatui::style::Color::Indexed(245),
-                tool_bg: ratatui::style::Color::Indexed(237),
-                tool_text: ratatui::style::Color::Indexed(243),
-                code_bg: ratatui::style::Color::Indexed(233),
-                code_text: ratatui::style::Color::Indexed(252),
-                border: ratatui::style::Color::Indexed(240),
-                timestamp: ratatui::style::Color::Indexed(246),
-            },
-            true,
-        )
+        Self::new(ChatColorsRgb::default(), true)
     }
 
     /// Set the messages to display
     #[must_use]
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
+        self.height_version = self.height_version.wrapping_add(1);
         self
     }
 
@@ -135,13 +187,17 @@ impl ChatComponent {
             }
         }
 
-        // Subagent messages: always 2 lines
+        // Subagent messages render 1 line per wrapped chunk (1-2 today).
         if message.role == MessageRole::System
             && message
                 .message_id
                 .as_deref()
                 .is_some_and(|id| id.starts_with("subagent:"))
         {
+            // 1 base line; +1 if there's a summary (we can't know without the
+            // subagent list, so the render path recomputes if needed). Use 1
+            // for the cache and let the height cache invalidate if the
+            // summary shows up. 2 is the upper bound used elsewhere.
             return 2;
         }
 
@@ -159,8 +215,8 @@ impl ChatComponent {
             if line.is_empty() {
                 total_wrapped_lines += 1;
             } else if content_width > 0 {
-                let line_len = line.len();
-                let wrapped = ((line_len as f64) / (content_width as f64)).ceil() as u16;
+                let line_cells = crate::utils::text::display_width(line);
+                let wrapped = ((line_cells as f64) / (content_width as f64)).ceil() as u16;
                 total_wrapped_lines += wrapped.max(1);
             } else {
                 total_wrapped_lines += 1;
@@ -187,16 +243,26 @@ impl ChatComponent {
     /// Scroll up by the given amount (in lines)
     pub fn scroll_up(&self, state: &mut ChatState, amount: u16) {
         state.scroll_position = state.scroll_position.saturating_sub(amount);
+        self.mark_user_scrolled(state);
     }
 
-    /// Scroll to the bottom
+    /// Scroll to the bottom (also clears the "↓ N new" pill).
     pub fn scroll_to_bottom(&self, state: &mut ChatState, card_manager: &CardManager) {
         state.scroll_position = self.max_scroll_position(state, card_manager);
+        state.at_bottom = true;
+        state.pending_new_count = 0;
     }
 
     /// Scroll to the top
     pub fn scroll_to_top(&self, state: &mut ChatState) {
         state.scroll_position = 0;
+        self.mark_user_scrolled(state);
+    }
+
+    /// Jump to the bottom (clears pending counter) — for the pill click and
+    /// the `G` keybinding.
+    pub fn jump_to_bottom(&self, state: &mut ChatState, card_manager: &CardManager) {
+        self.scroll_to_bottom(state, card_manager);
     }
 
     /// Get the maximum scroll position
@@ -264,10 +330,22 @@ impl ChatComponent {
     }
 
     /// Add a single message
-    pub fn add_message(&mut self, message: Message, state: &mut ChatState, card_manager: &CardManager) {
+    pub fn add_message(
+        &mut self,
+        message: Message,
+        state: &mut ChatState,
+        card_manager: &CardManager,
+    ) {
         self.messages.push(message);
-        // Auto-scroll to bottom when new message is added
-        self.scroll_to_bottom(state, card_manager);
+        self.bump_height_version();
+        // Only auto-scroll to bottom if the user is currently at the bottom.
+        // Otherwise, increment the pending count and let the user click
+        // the "↓ N new" pill (or press `G`) to jump down.
+        if state.at_bottom {
+            self.scroll_to_bottom(state, card_manager);
+        } else {
+            state.pending_new_count = state.pending_new_count.saturating_add(1);
+        }
     }
 
     /// Update an existing message (for streaming deltas)
@@ -278,25 +356,82 @@ impl ChatComponent {
             .position(|m| m.message_id == updated_message.message_id)
         {
             self.messages[index] = updated_message;
+            self.bump_height_version();
         }
+    }
+
+    /// Mark that the user has scrolled the chat (e.g. via wheel/key). Disables
+    /// auto-scroll-on-new-message until they return to the bottom.
+    pub fn mark_user_scrolled(&self, state: &mut ChatState) {
+        state.at_bottom = false;
     }
 
     /// Clear all messages
     pub fn clear_messages(&mut self, state: &mut ChatState) {
         self.messages.clear();
+        self.bump_height_version();
+        self.height_cache.replace(HeightCache::default());
         state.scroll_position = 0;
         state.scroll_offset_f32 = 0.0;
     }
 
     /// Set all messages at once
-    pub fn set_messages(&mut self, messages: Vec<Message>, state: &mut ChatState, card_manager: &CardManager) {
+    pub fn set_messages(
+        &mut self,
+        messages: Vec<Message>,
+        state: &mut ChatState,
+        card_manager: &CardManager,
+    ) {
         self.messages = messages;
+        self.bump_height_version();
         self.scroll_to_bottom(state, card_manager);
+    }
+
+    /// Bump the height-cache invalidation version.
+    fn bump_height_version(&mut self) {
+        self.height_version = self.height_version.wrapping_add(1);
+    }
+
+    /// Ensure the height cache is up to date for the given width; recompute if not.
+    /// Takes `&self` by using interior mutability on the cache.
+    fn ensure_heights(&self, inner_width: u16, card_manager: &CardManager) {
+        {
+            let cache = self.height_cache.borrow();
+            if cache.version == self.height_version
+                && cache.width == inner_width
+                && cache.heights.len() == self.messages.len()
+            {
+                return;
+            }
+        }
+        let mut new_heights = Vec::with_capacity(self.messages.len());
+        let mut total: u64 = 0;
+        for m in &self.messages {
+            let h = u64::from(self.message_height(m, card_manager, inner_width));
+            new_heights.push(h as u16);
+            total = total.saturating_add(h);
+        }
+        self.height_cache.replace(HeightCache {
+            version: self.height_version,
+            width: inner_width,
+            heights: new_heights,
+            total,
+        });
+    }
+
+    /// Read the cached heights (used by render).
+    fn cached_heights(&self) -> std::cell::Ref<'_, HeightCache> {
+        self.height_cache.borrow()
     }
 
     /// Set whether to show the logo when chat is empty
     pub fn set_show_logo_on_empty(&self, show: bool) {
         self.show_logo_on_empty.set(show);
+    }
+
+    /// Update the capabilities shown on the empty-state landing page.
+    pub fn set_capabilities(&self, capabilities: Capabilities) {
+        self.capabilities.replace(capabilities);
     }
 
     /// Toggle expansion of a system message
@@ -359,36 +494,55 @@ impl ChatComponent {
         }
     }
 
-    /// Build a display line for a subagent (rendered inline in chat transcript)
+    /// Build display lines for a subagent (rendered inline in chat transcript).
+    /// The lines wrap cell-aware to `max_width`.
     #[must_use]
-    pub fn build_subagent_line(&self, agent: &SubagentInfo) -> Line<'static> {
+    pub fn build_subagent_lines(&self, agent: &SubagentInfo, max_width: u16) -> Vec<Line<'static>> {
         let (icon, icon_style) = agent.status_style();
-        let mut spans = Vec::new();
-        spans.push(Span::styled(format!(" {icon} "), icon_style));
-        if agent.parent_id.is_some() {
-            spans.push(Span::styled("└ ", Style::default().fg(Color::DarkGray)));
-        }
-        spans.push(Span::styled(
-            agent.id.clone(),
-            Style::default().fg(Color::Cyan).bold(),
-        ));
-        let max_goal = 40usize;
-        let goal = if agent.goal.len() > max_goal {
-            format!(": {}...", &agent.goal[..max_goal.saturating_sub(3)])
+        // Hard cap (in display cells) for the goal and summary text. Long
+        // values are truncated with an ellipsis to keep the line scannable.
+        let max_goal = max_width.saturating_sub(20) as usize;
+        let goal_text = if max_goal == 0 {
+            String::new()
         } else {
-            format!(": {}", agent.goal)
+            let g = &agent.goal;
+            crate::utils::text::truncate_to_cells(g, max_goal, "…")
         };
-        spans.push(Span::styled(goal, Style::default().fg(Color::White)));
-        if let Some(ref summary) = agent.summary {
-            let max_sum = 30usize;
-            let s = if summary.len() > max_sum {
-                format!(" → {}...", &summary[..max_sum.saturating_sub(3)])
-            } else {
-                format!(" → {summary}")
-            };
-            spans.push(Span::styled(s, Style::default().fg(Color::DarkGray)));
+        let summary_text = agent.summary.as_deref().map(|s| {
+            crate::utils::text::truncate_to_cells(s, max_width.saturating_sub(20) as usize, "…")
+        });
+
+        // Build the fixed prefix: " icon [tree] id: <goal>" — keep the goal on
+        // the first line so the agent ID stays attached.
+        let mut first_spans: Vec<Span<'static>> = Vec::new();
+        first_spans.push(Span::styled(format!(" {icon} "), icon_style));
+        if agent.parent_id.is_some() {
+            first_spans.push(Span::styled("└ ", Style::default().fg(self.colors.border)));
         }
-        Line::from(spans)
+        first_spans.push(Span::styled(
+            agent.id.clone(),
+            Style::default().fg(self.colors.tool_text).bold(),
+        ));
+        first_spans.push(Span::styled(
+            format!(": {goal_text}"),
+            Style::default().fg(self.colors.assistant_text),
+        ));
+
+        let first_line = Line::from(first_spans);
+
+        // Optional summary as a second line.
+        let summary_line = summary_text.map(|s| {
+            Line::from(Span::styled(
+                format!(" → {s}"),
+                Style::default().fg(self.colors.timestamp),
+            ))
+        });
+
+        let mut out = vec![first_line];
+        if let Some(sl) = summary_line {
+            out.push(sl);
+        }
+        out
     }
 
     /// Render the chat component
@@ -403,7 +557,8 @@ impl ChatComponent {
         animation_frame: u64,
     ) {
         if self.messages.is_empty() {
-            self.render_empty(frame, area, connected, animation_frame);
+            let caps = self.capabilities.borrow().clone();
+            self.render_empty(frame, area, &caps, connected, animation_frame);
             return;
         }
 
@@ -415,13 +570,17 @@ impl ChatComponent {
         state.inner_width = inner_area.width;
         state.visible_height = inner_area.height;
 
-        let total_height: u16 = self
-            .messages
-            .iter()
-            .map(|m| self.message_height(m, card_manager, state.inner_width))
-            .sum();
+        // Refresh height cache (cheap no-op if already valid).
+        self.ensure_heights(state.inner_width, card_manager);
+        let cache = self.cached_heights();
+        let total_height = cache.total.min(u16::MAX as u64) as u16;
+        drop(cache);
+
         let max_scroll = total_height.saturating_sub(inner_area.height);
         let target_scroll = state.scroll_position.min(max_scroll);
+        // Compute "at bottom" after clamping. A 2-line slop keeps tiny float
+        // drift from breaking the sticky-bottom detection.
+        state.at_bottom = target_scroll + state.visible_height + 2 >= total_height;
         state.scroll_offset_f32 += (f32::from(target_scroll) - state.scroll_offset_f32) * 0.3;
         let current_scroll = state.scroll_offset_f32.round() as u16;
 
@@ -429,14 +588,16 @@ impl ChatComponent {
         let mut start_idx = 0usize;
         let mut start_offset = 0u16;
 
-        for (i, msg) in self.messages.iter().enumerate() {
-            let msg_height = self.message_height(msg, card_manager, state.inner_width);
-            if current_y + msg_height > current_scroll {
-                start_idx = i;
-                start_offset = current_scroll.saturating_sub(current_y);
-                break;
+        {
+            let cache = self.cached_heights();
+            for (i, msg_height) in cache.heights.iter().enumerate() {
+                if current_y + *msg_height > current_scroll {
+                    start_idx = i;
+                    start_offset = current_scroll.saturating_sub(current_y);
+                    break;
+                }
+                current_y += *msg_height;
             }
-            current_y += msg_height;
         }
 
         let mut y_offset = 0u16;
@@ -446,6 +607,7 @@ impl ChatComponent {
                 break;
             }
 
+            let cached_height = self.cached_heights().heights[msg_idx];
             let msg_height = if message.role == MessageRole::Tool && message.message_id.is_some() {
                 // Tool messages use card_manager height for inline rendering
                 if let Some(card) = message
@@ -458,7 +620,10 @@ impl ChatComponent {
                         let lines = card
                             .content()
                             .lines()
-                            .map(|l: &str| ((l.len() as f64) / w.max(1) as f64).ceil() as u16)
+                            .map(|l: &str| {
+                                let cells = crate::utils::text::display_width(l);
+                                ((cells as f64) / w.max(1) as f64).ceil() as u16
+                            })
                             .sum::<u16>()
                             .max(1);
                         lines + 3
@@ -466,7 +631,7 @@ impl ChatComponent {
                         4
                     }
                 } else {
-                    self.message_height(message, card_manager, state.inner_width)
+                    cached_height
                 }
             } else if message.role == MessageRole::System
                 && message
@@ -476,7 +641,7 @@ impl ChatComponent {
             {
                 2
             } else {
-                self.message_height(message, card_manager, state.inner_width)
+                cached_height
             };
 
             let available_height = inner_area.height.saturating_sub(y_offset);
@@ -493,6 +658,12 @@ impl ChatComponent {
                     width: inner_area.width,
                     height: render_height,
                 };
+
+                // Paint selection background first so the message renders on top.
+                if is_selected && render_height > 0 {
+                    let bg = Paragraph::new("").style(Style::new().bg(self.colors.selection_bg));
+                    frame.render_widget(bg, msg_area);
+                }
 
                 let prev_is_tool = if msg_idx > 0 {
                     self.messages
@@ -531,6 +702,29 @@ impl ChatComponent {
 
             frame.render_stateful_widget(scrollbar, area, &mut scroll_state);
         }
+
+        // "↓ N new" pill (sticky-bottom companion).
+        if state.pending_new_count > 0 {
+            let n = state.pending_new_count;
+            let label = format!(" ↓ {n} new ⏎ ");
+            let label_width = crate::utils::text::display_width(&label) as u16;
+            let pill_w = label_width + 2;
+            let pill_w = pill_w.min(area.width);
+            let pill_area = Rect {
+                x: area.x + area.width.saturating_sub(pill_w + 1),
+                y: area.y + area.height.saturating_sub(1),
+                width: pill_w,
+                height: 1,
+            };
+            let pill_style = Style::new()
+                .fg(self.colors.pill_fg)
+                .bg(self.colors.pill_bg)
+                .add_modifier(Modifier::BOLD);
+            let pill = Paragraph::new(label)
+                .style(pill_style)
+                .alignment(ratatui::layout::Alignment::Right);
+            frame.render_widget(pill, pill_area);
+        }
     }
 
     /// Render a single message
@@ -547,11 +741,11 @@ impl ChatComponent {
         animation_frame: u64,
     ) {
         let role_style = self.get_role_style(message.role.clone());
-        let role_glyph = match message.role {
-            MessageRole::User => " 👤 ",
-            MessageRole::Assistant => " 🤖 ",
-            MessageRole::System => " ⚙️ ",
-            MessageRole::Tool => " 🛠️ ",
+        let role_glyph: &str = match message.role {
+            MessageRole::User => &self.colors.role_glyph_user,
+            MessageRole::Assistant => &self.colors.role_glyph_assistant,
+            MessageRole::System => &self.colors.role_glyph_system,
+            MessageRole::Tool => &self.colors.role_glyph_tool,
         };
 
         // Check if this message has an inline tool card
@@ -569,7 +763,7 @@ impl ChatComponent {
 
         if message.role == MessageRole::User {
             // User messages keep the bubble style
-            let border_style = Style::new().fg(self.colors.user_bg);
+            let border_style = Style::new().fg(self.colors.user_bubble_border);
             let mut block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -604,7 +798,7 @@ impl ChatComponent {
                 let sep = Line::from(Span::styled(
                     " └─ Response ",
                     Style::new()
-                        .fg(self.colors.border)
+                        .fg(self.colors.accent_response_separator)
                         .add_modifier(Modifier::DIM),
                 ));
                 frame.render_widget(Paragraph::new(sep), Rect::new(area.x, y, area.width, 1));
@@ -617,9 +811,11 @@ impl ChatComponent {
             }
 
             // Gutter: selection indicator or role glyph
-            let gutter_str = if is_selected { "> " } else { role_glyph };
+            let gutter_str = if is_selected { "▶ " } else { role_glyph };
             let gutter_style = if is_selected {
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(self.colors.selection_accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new()
                     .fg(match message.role {
@@ -631,6 +827,21 @@ impl ChatComponent {
                     .add_modifier(Modifier::BOLD)
             };
             let gutter = Line::from(Span::styled(gutter_str, gutter_style));
+            // For selected messages, paint a 2-cell accent bar to the left of
+            // the gutter.
+            if is_selected && area.width >= 6 {
+                let bar = "██".repeat(remaining_height as usize);
+                let bar_line = Line::from(Span::styled(
+                    bar,
+                    Style::new()
+                        .fg(self.colors.selection_accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                frame.render_widget(
+                    Paragraph::new(bar_line),
+                    Rect::new(area.x, y, 2, remaining_height),
+                );
+            }
             frame.render_widget(
                 Paragraph::new(gutter),
                 Rect::new(area.x, y, 3, 1.min(remaining_height)),
@@ -640,9 +851,16 @@ impl ChatComponent {
                 return;
             }
 
-            // Content area to the right of gutter
-            let content_width = area.width.saturating_sub(4);
-            let content_area = Rect::new(area.x + 3, y, content_width, remaining_height);
+            // Content area to the right of gutter (and accent bar if selected)
+            let gutter_offset = if is_selected { 6 } else { 4 };
+            let content_width = area.width.saturating_sub(gutter_offset);
+            let content_x_offset = if is_selected { 5 } else { 3 };
+            let content_area = Rect::new(
+                area.x + content_x_offset,
+                y,
+                content_width,
+                remaining_height,
+            );
             if content_width < 2 || remaining_height == 0 {
                 return;
             }
@@ -667,8 +885,9 @@ impl ChatComponent {
                     .and_then(|id| id.strip_prefix("subagent:"))
                     .and_then(|agent_id| subagents.agents().iter().find(|a| a.id == agent_id))
                 {
-                    let line = self.build_subagent_line(agent);
-                    frame.render_widget(Paragraph::new(line), content_area);
+                    let lines = self.build_subagent_lines(agent, content_width);
+                    let para = Paragraph::new(lines);
+                    frame.render_widget(para, content_area);
                     return;
                 }
             }
@@ -696,10 +915,19 @@ impl ChatComponent {
 
             // Add reasoning if present (Phase 4 DSL extensions)
             if let Some(reasoning) = &message.reasoning {
-                lines.insert(0, Line::from(vec![
-                    Span::styled(" 🧠 Reasoning: ", Style::default().fg(Color::Rgb(174, 129, 255)).italic()),
-                    Span::styled(reasoning, Style::default().fg(Color::DarkGray).italic()),
-                ]));
+                lines.insert(
+                    0,
+                    Line::from(vec![
+                        Span::styled(
+                            " 🧠 Reasoning: ",
+                            Style::default().fg(self.colors.accent_reasoning).italic(),
+                        ),
+                        Span::styled(
+                            reasoning,
+                            Style::default().fg(self.colors.timestamp).italic(),
+                        ),
+                    ]),
+                );
                 lines.insert(1, Line::from(""));
             }
 
@@ -707,8 +935,11 @@ impl ChatComponent {
             if let Some(warning) = &message.warning {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
-                    Span::styled(" ⚠️ Warning: ", Style::default().fg(Color::Yellow).bold()),
-                    Span::styled(warning, Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        " ⚠️ Warning: ",
+                        Style::default().fg(self.colors.accent_warning).bold(),
+                    ),
+                    Span::styled(warning, Style::default().fg(self.colors.accent_warning)),
                 ]));
             }
 
@@ -795,12 +1026,13 @@ impl ChatComponent {
             if result.is_empty() {
                 result.push(Line::from(Span::styled(
                     "▊",
-                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(self.colors.selection_accent),
                 )));
             } else if let Some(last_line) = result.last_mut() {
-                last_line
-                    .spans
-                    .push(Span::styled("▊", Style::new().fg(Color::Yellow)));
+                last_line.spans.push(Span::styled(
+                    "▊",
+                    Style::new().fg(self.colors.selection_accent),
+                ));
             }
         }
 
@@ -831,7 +1063,14 @@ impl ChatComponent {
     }
 
     /// Render empty state (Landing Page)
-    fn render_empty(&self, frame: &mut Frame, area: Rect, connected: bool, _animation_frame: u64) {
+    fn render_empty(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        capabilities: &Capabilities,
+        connected: bool,
+        animation_frame: u64,
+    ) {
         let inner_area = area;
 
         // Build info text (shared between logo and no-logo modes)
@@ -926,7 +1165,10 @@ impl ChatComponent {
 
         // Footer counts
         info_text.push(Line::from(vec![Span::styled(
-            "  41 tools · 1321 skills · /help for commands",
+            format!(
+                "  {} tools · {} skills · /help for commands",
+                capabilities.tool_count, capabilities.skill_count
+            ),
             Style::default().fg(Color::Rgb(117, 113, 94)).italic(),
         )]));
 
@@ -958,12 +1200,9 @@ impl ChatComponent {
 
             let mut hero_spans = Vec::new();
 
-            // Simple time-based animation offset
-            let time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as usize;
-            let offset = (time / 100) % 6;
+            // Animation offset derived from the render frame so the hero
+            // pauses with the rest of the UI when animations halt.
+            let offset = (animation_frame as usize / 4) % 6;
 
             for (i, line) in hero_lines.iter().enumerate() {
                 let color_idx = (i + offset) % 6;
@@ -984,7 +1223,7 @@ impl ChatComponent {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Double)
-                        .border_style(Style::default().fg(self.colors.border))
+                        .border_style(Style::default().fg(self.colors.hero_border))
                         .padding(Padding::new(2, 2, 2, 2)),
                 );
             frame.render_widget(hero_para, layout[0]);
@@ -999,5 +1238,281 @@ impl ChatComponent {
                 Paragraph::new(info_text).block(Block::default().padding(Padding::new(2, 0, 0, 0)));
             frame.render_widget(info_para, inner_area);
         }
+    }
+}
+
+impl ChatComponent {
+    // ------------------------------------------------------------------
+    // Phase 5: message actions
+    // ------------------------------------------------------------------
+
+    /// Returns the actions available for the message at the given index, with
+    /// a short label for the action menu.
+    #[must_use]
+    pub fn available_actions(&self, idx: usize) -> Vec<(ChatAction, &'static str)> {
+        let role = match self.messages.get(idx) {
+            Some(m) => m.role.clone(),
+            None => return Vec::new(),
+        };
+        match role {
+            MessageRole::User => vec![
+                (ChatAction::Copy, "Copy"),
+                (ChatAction::YankToComposer, "Yank to composer"),
+                (ChatAction::Edit, "Edit"),
+                (ChatAction::Delete, "Delete"),
+                (ChatAction::Branch, "Branch from here"),
+            ],
+            MessageRole::Assistant => vec![
+                (ChatAction::Copy, "Copy"),
+                (ChatAction::YankToComposer, "Yank to composer"),
+                (ChatAction::Regenerate, "Regenerate"),
+                (ChatAction::Delete, "Delete"),
+                (ChatAction::Branch, "Branch from here"),
+            ],
+            MessageRole::System | MessageRole::Tool => vec![
+                (ChatAction::Copy, "Copy"),
+                (ChatAction::YankToComposer, "Yank to composer"),
+                (ChatAction::Delete, "Delete"),
+            ],
+        }
+    }
+
+    /// Translate a `ChatAction` into a `ChatCommand` for the app loop.
+    /// Returns `Noop` if the index is out of bounds.
+    #[must_use]
+    pub fn perform_action(&self, action: ChatAction, idx: usize) -> ChatCommand {
+        let message = match self.messages.get(idx) {
+            Some(m) => m,
+            None => return ChatCommand::Noop,
+        };
+        match action {
+            ChatAction::Copy => ChatCommand::Copy(message.content.clone()),
+            ChatAction::YankToComposer => ChatCommand::Yank(message.content.clone()),
+            ChatAction::Edit => match &message.message_id {
+                Some(id) => ChatCommand::Edit {
+                    message_id: id.clone(),
+                    new_content: message.content.clone(),
+                },
+                None => ChatCommand::Noop,
+            },
+            ChatAction::Regenerate => ChatCommand::Regenerate { from_index: idx },
+            ChatAction::Delete => ChatCommand::Delete { from_index: idx },
+            ChatAction::Branch => match &message.message_id {
+                Some(id) => ChatCommand::Branch {
+                    from_message_id: id.clone(),
+                    content: message.content.clone(),
+                },
+                None => ChatCommand::Noop,
+            },
+        }
+    }
+
+    /// Find the message index for a given `message_id`, or `None`.
+    #[must_use]
+    pub fn index_of_message_id(&self, id: &str) -> Option<usize> {
+        self.messages
+            .iter()
+            .position(|m| m.message_id.as_deref() == Some(id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::types::MessageRole;
+    use crate::state::messages::Message;
+
+    fn make_user(s: &str) -> Message {
+        Message::user(s)
+    }
+
+    #[test]
+    fn test_message_height_cjk() {
+        let chat = ChatComponent::with_defaults();
+        let m = make_user("你好世界");
+        let h = chat.message_height(&m, &CardManager::new(ChatColorsRgb::default()), 40);
+        // 4 CJK chars (8 cells) at width 38 → 1 wrapped line, plus 3 for borders.
+        assert!(h >= 4);
+    }
+
+    #[test]
+    fn test_height_cache_invalidates_on_add() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_user("hello"), &mut state, &cards);
+        let v1 = chat.height_version;
+        chat.add_message(make_user("world"), &mut state, &cards);
+        let v2 = chat.height_version;
+        assert!(v2 > v1);
+    }
+
+    #[test]
+    fn test_height_cache_invalidates_on_update() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        let mut msg = make_user("hello");
+        msg.message_id = Some("abc".to_string());
+        chat.add_message(msg, &mut state, &cards);
+        let v1 = chat.height_version;
+        let mut updated = make_user("hello world");
+        updated.message_id = Some("abc".to_string());
+        chat.update_message(updated);
+        let v2 = chat.height_version;
+        assert!(v2 > v1);
+    }
+
+    #[test]
+    fn test_ensure_heights_caches() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_user("hello"), &mut state, &cards);
+        chat.add_message(make_user("world"), &mut state, &cards);
+        chat.ensure_heights(80, &cards);
+        let first = chat.cached_heights().heights.clone();
+        chat.ensure_heights(80, &cards);
+        let second = chat.cached_heights().heights.clone();
+        assert_eq!(first, second);
+        // Widening the chat should invalidate the cache.
+        chat.ensure_heights(120, &cards);
+        let third = chat.cached_heights().heights.clone();
+        assert_eq!(
+            first, third,
+            "width change with same content shouldn't change heights"
+        );
+    }
+
+    #[test]
+    fn test_mark_user_scrolled_clears_at_bottom() {
+        let mut state = ChatState::new();
+        state.at_bottom = true;
+        let chat = ChatComponent::with_defaults();
+        chat.mark_user_scrolled(&mut state);
+        assert!(!state.at_bottom);
+    }
+
+    #[test]
+    fn test_pending_new_increments_when_offscreen() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        state.at_bottom = false;
+        chat.add_message(make_user("first"), &mut state, &cards);
+        assert_eq!(state.pending_new_count, 1);
+        chat.add_message(make_user("second"), &mut state, &cards);
+        assert_eq!(state.pending_new_count, 2);
+    }
+
+    #[test]
+    fn test_jump_to_bottom_clears_pending() {
+        let chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        state.pending_new_count = 5;
+        state.at_bottom = false;
+        chat.jump_to_bottom(&mut state, &cards);
+        assert_eq!(state.pending_new_count, 0);
+        assert!(state.at_bottom);
+    }
+
+    fn make_assistant(s: &str) -> Message {
+        Message::assistant(s)
+    }
+
+    #[test]
+    fn test_available_actions_user() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_user("hello"), &mut state, &cards);
+        let actions = chat.available_actions(0);
+        let kinds: Vec<ChatAction> = actions.iter().map(|(a, _)| *a).collect();
+        assert!(kinds.contains(&ChatAction::Copy));
+        assert!(kinds.contains(&ChatAction::YankToComposer));
+        assert!(kinds.contains(&ChatAction::Edit));
+        assert!(kinds.contains(&ChatAction::Delete));
+        assert!(kinds.contains(&ChatAction::Branch));
+    }
+
+    #[test]
+    fn test_available_actions_assistant() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_assistant("hi"), &mut state, &cards);
+        let actions = chat.available_actions(0);
+        let kinds: Vec<ChatAction> = actions.iter().map(|(a, _)| *a).collect();
+        assert!(kinds.contains(&ChatAction::Regenerate));
+        assert!(!kinds.contains(&ChatAction::Edit));
+    }
+
+    #[test]
+    fn test_perform_action_yank_returns_content() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_user("hello world"), &mut state, &cards);
+        match chat.perform_action(ChatAction::YankToComposer, 0) {
+            ChatCommand::Yank(s) => assert_eq!(s, "hello world"),
+            _ => panic!("expected Yank"),
+        }
+    }
+
+    #[test]
+    fn test_perform_action_regenerate_uses_index() {
+        let mut chat = ChatComponent::with_defaults();
+        let mut state = ChatState::new();
+        let cards = CardManager::new(ChatColorsRgb::default());
+        chat.add_message(make_user("hi"), &mut state, &cards);
+        chat.add_message(make_assistant("hello"), &mut state, &cards);
+        match chat.perform_action(ChatAction::Regenerate, 1) {
+            ChatCommand::Regenerate { from_index } => assert_eq!(from_index, 1),
+            _ => panic!("expected Regenerate"),
+        }
+    }
+
+    #[test]
+    fn test_perform_action_out_of_bounds_is_noop() {
+        let chat = ChatComponent::with_defaults();
+        assert_eq!(chat.perform_action(ChatAction::Copy, 99), ChatCommand::Noop);
+    }
+
+    #[test]
+    fn test_subagent_lines_has_id_and_goal() {
+        use crate::ui::subagent::SubagentInfo;
+        let chat = ChatComponent::with_defaults();
+        let mut info = SubagentInfo::new("a1", "find the bug", None);
+        let lines = chat.build_subagent_lines(&info, 80);
+        assert!(!lines.is_empty());
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("a1"));
+        assert!(rendered.contains("find the bug"));
+    }
+
+    #[test]
+    fn test_subagent_lines_truncates_long_goal() {
+        use crate::ui::subagent::SubagentInfo;
+        let chat = ChatComponent::with_defaults();
+        let long_goal = "x".repeat(500);
+        let info = SubagentInfo::new("a1", &long_goal, None);
+        let lines = chat.build_subagent_lines(&info, 40);
+        let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // The goal is truncated to <= 40 - 20 = 20 cells.
+        assert!(first.chars().count() < long_goal.chars().count());
+        assert!(first.contains("…"));
+    }
+
+    #[test]
+    fn test_subagent_lines_summary_adds_second_line() {
+        use crate::ui::subagent::SubagentInfo;
+        let chat = ChatComponent::with_defaults();
+        let mut info = SubagentInfo::new("a1", "short goal", None);
+        info.mark_completed("a brief summary".to_string());
+        let lines = chat.build_subagent_lines(&info, 80);
+        assert_eq!(lines.len(), 2);
+        let second: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(second.contains("→"));
     }
 }

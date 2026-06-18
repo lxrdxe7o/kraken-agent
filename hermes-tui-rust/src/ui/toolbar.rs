@@ -84,20 +84,7 @@ impl Toolbar {
                 success: ratatui::style::Color::Green,
                 warning: ratatui::style::Color::Yellow,
             },
-            ChatColorsRgb {
-                user_bg: ratatui::style::Color::Indexed(238),
-                user_text: ratatui::style::Color::Indexed(252),
-                assistant_bg: ratatui::style::Color::Indexed(236),
-                assistant_text: ratatui::style::Color::Indexed(248),
-                system_bg: ratatui::style::Color::Indexed(235),
-                system_text: ratatui::style::Color::Indexed(245),
-                tool_bg: ratatui::style::Color::Indexed(237),
-                tool_text: ratatui::style::Color::Indexed(243),
-                code_bg: ratatui::style::Color::Indexed(233),
-                code_text: ratatui::style::Color::Indexed(252),
-                border: ratatui::style::Color::Indexed(240),
-                timestamp: ratatui::style::Color::Indexed(246),
-            },
+            ChatColorsRgb::default(),
         )
     }
 
@@ -315,20 +302,7 @@ mod tests {
     }
 
     fn create_test_chat_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: ratatui::style::Color::Indexed(238),
-            user_text: ratatui::style::Color::Indexed(252),
-            assistant_bg: ratatui::style::Color::Indexed(236),
-            assistant_text: ratatui::style::Color::Indexed(248),
-            system_bg: ratatui::style::Color::Indexed(235),
-            system_text: ratatui::style::Color::Indexed(245),
-            tool_bg: ratatui::style::Color::Indexed(237),
-            tool_text: ratatui::style::Color::Indexed(243),
-            code_bg: ratatui::style::Color::Indexed(233),
-            code_text: ratatui::style::Color::Indexed(252),
-            border: ratatui::style::Color::Indexed(240),
-            timestamp: ratatui::style::Color::Indexed(246),
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

@@ -165,8 +165,7 @@ impl RopeBuffer {
     /// Convert a byte index to a char index.
     #[must_use]
     pub fn byte_to_char(&self, byte_idx: usize) -> usize {
-        self.rope
-            .byte_to_char_idx(byte_idx.min(self.rope.len()))
+        self.rope.byte_to_char_idx(byte_idx.min(self.rope.len()))
     }
 
     // ==================================================================
@@ -184,8 +183,7 @@ impl RopeBuffer {
         (start_row..start_row + height)
             .map(|i| {
                 if i < max {
-                    let s: String =
-                        self.rope.line(i, LineType::LF_CR).chunks().collect();
+                    let s: String = self.rope.line(i, LineType::LF_CR).chunks().collect();
                     strip_trailing_line_break(&s)
                 } else {
                     String::new()
@@ -208,7 +206,13 @@ impl RopeBuffer {
         }
         let half = max_width.saturating_sub(1) / 2;
         let start_col = if col > half { col - half } else { 0 };
-        strip_trailing_line_break(&line_s.chars().skip(start_col).take(max_width).collect::<String>())
+        strip_trailing_line_break(
+            &line_s
+                .chars()
+                .skip(start_col)
+                .take(max_width)
+                .collect::<String>(),
+        )
     }
 
     // ==================================================================
@@ -380,11 +384,11 @@ mod tests {
     fn test_char_byte_conversion() {
         let buf = RopeBuffer::from_str("héllo wörld");
         // 'é' is 2 bytes in UTF-8 (0xC3 0xA9), 'ö' is 2 bytes
-        assert_eq!(buf.char_to_byte(0), 0);   // 'h'
-        assert_eq!(buf.char_to_byte(1), 1);   // 'é' starts at byte 1
-        // byte_to_char rounds down inside a multi-byte char
-        assert_eq!(buf.byte_to_char(2), 1);   // byte 2 = inside 'é' → char 1
-        assert_eq!(buf.byte_to_char(1), 1);   // byte 1 = start of 'é' → char 1
+        assert_eq!(buf.char_to_byte(0), 0); // 'h'
+        assert_eq!(buf.char_to_byte(1), 1); // 'é' starts at byte 1
+                                            // byte_to_char rounds down inside a multi-byte char
+        assert_eq!(buf.byte_to_char(2), 1); // byte 2 = inside 'é' → char 1
+        assert_eq!(buf.byte_to_char(1), 1); // byte 1 = start of 'é' → char 1
     }
 
     #[test]

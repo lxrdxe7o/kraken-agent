@@ -575,6 +575,129 @@ pub fn repeat(text: &str, n: usize) -> String {
 pub fn join(strings: &[&str], separator: &str) -> String {
     strings.join(separator)
 }
+
+// ============================================================================
+// Cell-aware helpers (used by chat height math and truncation)
+// ============================================================================
+
+/// Total *display cells* of a string, honoring East-Asian width, emoji, ZWJ.
+#[must_use]
+pub fn display_width(s: &str) -> usize {
+    s.width()
+}
+
+/// Total *display cells* of a `ratatui::text::Line`, summing span widths.
+#[must_use]
+pub fn line_display_width(line: &Line<'_>) -> usize {
+    line.spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// Wrap a string to ≤ `max_cells` display cells, breaking only at cell
+/// boundaries (never mid-grapheme).
+///
+/// The strategy:
+/// 1. Walk cells, accumulating into `current`.
+/// 2. If a hard `\n` is hit, push `current` and reset.
+/// 3. If `current`'s cell width would exceed `max_cells`, prefer to break
+///    at the last whitespace cell; otherwise hard-break at the boundary.
+#[must_use]
+pub fn wrap_display_cells(s: &str, max_cells: usize) -> Vec<String> {
+    if max_cells == 0 {
+        return vec![s.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_cells = 0usize;
+    let mut last_break_byte: Option<usize> = None;
+    let mut last_break_cells = 0usize;
+
+    for c in s.chars() {
+        if c == '\n' {
+            lines.push(std::mem::take(&mut current));
+            current_cells = 0;
+            last_break_byte = None;
+            last_break_cells = 0;
+            continue;
+        }
+        let cw = c.width().unwrap_or(1);
+        if cw == 0 {
+            current.push(c);
+            continue;
+        }
+
+        if current_cells + cw > max_cells {
+            if let Some(byte_idx) = last_break_byte {
+                let head = current[..byte_idx].trim_end().to_string();
+                let tail_start = if byte_idx < current.len() {
+                    let after_ws = current[byte_idx..]
+                        .chars()
+                        .next()
+                        .map(|ch| ch.len_utf8())
+                        .unwrap_or(0);
+                    current[byte_idx + after_ws..].to_string()
+                } else {
+                    String::new()
+                };
+                lines.push(head);
+                current = tail_start;
+                current_cells = current_cells.saturating_sub(last_break_cells + 1);
+                last_break_byte = None;
+                last_break_cells = 0;
+            } else {
+                // Hard break at cell boundary. Push current and reset.
+                lines.push(std::mem::take(&mut current));
+                current_cells = 0;
+            }
+            // Whether soft or hard break, skip any whitespace that would
+            // become leading whitespace on the new line.
+            if c.is_whitespace() {
+                continue;
+            }
+        }
+
+        if c.is_whitespace() && !current.is_empty() {
+            last_break_byte = Some(current.len());
+            last_break_cells = current_cells;
+        }
+        current.push(c);
+        current_cells += cw;
+    }
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Truncate a string to ≤ `max_cells` display cells, appending `ellipsis`
+/// if the string was cut. Respects cell boundaries.
+#[must_use]
+pub fn truncate_to_cells(s: &str, max_cells: usize, ellipsis: &str) -> String {
+    if max_cells == 0 {
+        return String::new();
+    }
+    let s_width = s.width();
+    if s_width <= max_cells {
+        return s.to_string();
+    }
+    let ellipsis_w = ellipsis.width();
+    if max_cells <= ellipsis_w {
+        return ellipsis.chars().take(max_cells).collect();
+    }
+    let budget = max_cells - ellipsis_w;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(1);
+        if used + cw > budget {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    out.push_str(ellipsis);
+    out
+}
 /// Determine if input looks like a slash command.
 #[must_use]
 pub fn looks_like_slash_command(input: &str) -> bool {
@@ -860,5 +983,64 @@ mod tests {
         assert_eq!(char_count("hello world"), 11);
         assert_eq!(char_count("  hello   world  "), 17);
         assert_eq!(char_count(""), 0);
+    }
+
+    // ----- cell-aware helpers -----
+
+    #[test]
+    fn test_display_width_cjk() {
+        assert_eq!(display_width("你好世界"), 8);
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn test_line_display_width_sums_spans() {
+        let line = Line::from(vec![
+            ratatui::text::Span::raw("你"),
+            ratatui::text::Span::raw("好"),
+        ]);
+        assert_eq!(line_display_width(&line), 4);
+    }
+
+    #[test]
+    fn test_wrap_display_cells_word_boundary() {
+        let lines = wrap_display_cells("hello world", 5);
+        assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn test_wrap_display_cells_hard_break() {
+        let lines = wrap_display_cells("abcdefgh", 3);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.width() <= 3));
+    }
+
+    #[test]
+    fn test_wrap_display_cells_preserves_newlines() {
+        let lines = wrap_display_cells("a\nb\nc", 10);
+        assert_eq!(
+            lines,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_truncate_to_cells_appends_ellipsis() {
+        let s = truncate_to_cells("abcdef", 4, "…");
+        assert_eq!(s.width(), 4);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn test_truncate_to_cells_no_cut_when_fits() {
+        assert_eq!(truncate_to_cells("hi", 10, "…"), "hi");
+    }
+
+    #[test]
+    fn test_truncate_to_cells_respects_cjk_width() {
+        // 4 CJK chars (8 cells); budget 5 with "…" (1 cell) → 4 cells.
+        let s = truncate_to_cells("你好世界", 5, "…");
+        assert_eq!(s.width(), 5);
     }
 }

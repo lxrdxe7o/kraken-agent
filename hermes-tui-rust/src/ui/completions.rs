@@ -148,27 +148,44 @@ impl CompletionPopup {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.colors.border));
 
-        let list = List::new(list_items)
-            .block(block)
-            .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        let list = List::new(list_items).block(block).highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
         frame.render_stateful_widget(list, popup_area, &mut self.state);
 
         // Render animated gradient border over the block
-        crate::ui::borders::render_gradient_border(frame.buffer_mut(), popup_area, animation_frame, true, false);
-        
+        crate::ui::borders::render_gradient_border(
+            frame.buffer_mut(),
+            popup_area,
+            animation_frame,
+            true,
+            false,
+        );
+
         // Render helper hints
         let hints = Line::from(vec![
-            " ↑↓ ".bold().yellow(), "navigate".into(),
+            " ↑↓ ".bold().yellow(),
+            "navigate".into(),
             " │ ".into(),
-            " Enter ".bold().yellow(), "apply".into(),
+            " Enter ".bold().yellow(),
+            "apply".into(),
             " │ ".into(),
-            " Esc ".bold().yellow(), "cancel".into(),
-        ]).alignment(ratatui::layout::Alignment::Center);
-        
+            " Esc ".bold().yellow(),
+            "cancel".into(),
+        ])
+        .alignment(ratatui::layout::Alignment::Center);
+
         frame.render_widget(
             ratatui::widgets::Paragraph::new(hints),
-            Rect::new(popup_area.x, popup_area.y + popup_area.height - 2, popup_area.width, 1)
+            Rect::new(
+                popup_area.x,
+                popup_area.y + popup_area.height - 2,
+                popup_area.width,
+                1,
+            ),
         );
     }
 }
@@ -178,20 +195,7 @@ mod tests {
     use super::*;
 
     fn create_test_colors() -> ChatColorsRgb {
-        ChatColorsRgb {
-            user_bg: Color::Reset,
-            user_text: Color::Reset,
-            assistant_bg: Color::Reset,
-            assistant_text: Color::Reset,
-            system_bg: Color::Reset,
-            system_text: Color::Reset,
-            tool_bg: Color::Reset,
-            tool_text: Color::Reset,
-            code_bg: Color::Reset,
-            code_text: Color::Reset,
-            border: Color::Reset,
-            timestamp: Color::Reset,
-        }
+        ChatColorsRgb::default()
     }
 
     #[test]

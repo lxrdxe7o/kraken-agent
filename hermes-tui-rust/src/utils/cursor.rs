@@ -190,7 +190,9 @@ mod tests {
             assert!(
                 back <= byte_idx,
                 "byte_to_col({})→{}→col_to_byte→{} should be ≤{byte_idx}",
-                byte_idx, col, back,
+                byte_idx,
+                col,
+                back,
             );
         }
     }

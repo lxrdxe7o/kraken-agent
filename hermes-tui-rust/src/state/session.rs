@@ -79,33 +79,40 @@ impl Session {
         self.total_usage.prompt_tokens += usage.prompt_tokens;
         self.total_usage.completion_tokens += usage.completion_tokens;
         self.total_usage.total_tokens += usage.total_tokens;
-        
+
         if let Some(read) = usage.cache_read_tokens {
-            self.total_usage.cache_read_tokens = Some(self.total_usage.cache_read_tokens.unwrap_or(0) + read);
+            self.total_usage.cache_read_tokens =
+                Some(self.total_usage.cache_read_tokens.unwrap_or(0) + read);
         }
         if let Some(write) = usage.cache_write_tokens {
-            self.total_usage.cache_write_tokens = Some(self.total_usage.cache_write_tokens.unwrap_or(0) + write);
+            self.total_usage.cache_write_tokens =
+                Some(self.total_usage.cache_write_tokens.unwrap_or(0) + write);
         }
 
         if let Some(prompt_cat) = usage.prompt_category_tokens {
-            self.total_usage.prompt_category_tokens = Some(self.total_usage.prompt_category_tokens.unwrap_or(0) + prompt_cat);
+            self.total_usage.prompt_category_tokens =
+                Some(self.total_usage.prompt_category_tokens.unwrap_or(0) + prompt_cat);
         }
         if let Some(tool_call) = usage.tool_call_tokens {
-            self.total_usage.tool_call_tokens = Some(self.total_usage.tool_call_tokens.unwrap_or(0) + tool_call);
+            self.total_usage.tool_call_tokens =
+                Some(self.total_usage.tool_call_tokens.unwrap_or(0) + tool_call);
         }
         if let Some(reasoning) = usage.reasoning_tokens {
-            self.total_usage.reasoning_tokens = Some(self.total_usage.reasoning_tokens.unwrap_or(0) + reasoning);
+            self.total_usage.reasoning_tokens =
+                Some(self.total_usage.reasoning_tokens.unwrap_or(0) + reasoning);
         }
         if let Some(output) = usage.output_tokens {
-            self.total_usage.output_tokens = Some(self.total_usage.output_tokens.unwrap_or(0) + output);
+            self.total_usage.output_tokens =
+                Some(self.total_usage.output_tokens.unwrap_or(0) + output);
         }
         if let Some(failed) = usage.failed_tool_call_tokens {
-            self.total_usage.failed_tool_call_tokens = Some(self.total_usage.failed_tool_call_tokens.unwrap_or(0) + failed);
+            self.total_usage.failed_tool_call_tokens =
+                Some(self.total_usage.failed_tool_call_tokens.unwrap_or(0) + failed);
         }
 
         // Very rough cost calculation (e.g. $10 per 1M tokens)
         // In a real app, this would be model-specific
-        let cost_per_token = 0.00001; 
+        let cost_per_token = 0.00001;
         self.total_cost += usage.total_tokens as f64 * cost_per_token;
     }
 
