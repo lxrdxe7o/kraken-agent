@@ -733,7 +733,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
     # The skills catalog is only reachable when the `skills` toolset is enabled
     # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
     # Slate install — the agent literally cannot load any skill, so advertising
@@ -745,6 +744,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     else:
         skills_by_category = {}
         total_skills = 0
+
+    header_skills = f"[bold {accent}]Available Skills[/]"
+    if _skills_enabled and total_skills > 0:
+        header_skills += f"  [dim {dim}]({total_skills} total)[/]"
+    right_lines.append(header_skills)
 
     if not _skills_enabled:
         right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")

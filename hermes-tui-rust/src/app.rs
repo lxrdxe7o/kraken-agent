@@ -154,6 +154,16 @@ pub struct App {
     memory_history: Vec<u64>,
     /// History of token generation speeds (for sparkline)
     token_speed_history: Vec<u64>,
+    /// Network interfaces tracker (for real throughput data)
+    networks: sysinfo::Networks,
+    /// Current network receive speed (bytes/s)
+    net_rx_speed: f32,
+    /// Current network transmit speed (bytes/s)
+    net_tx_speed: f32,
+    /// History of network receive speeds for sparkline (bytes/s)
+    net_rx_history: Vec<u64>,
+    /// History of network transmit speeds for sparkline (bytes/s)
+    net_tx_history: Vec<u64>,
     /// Currently focused pane for keyboard navigation
     focus_pane: FocusPane,
     /// Global animation frame counter for animated borders
@@ -259,6 +269,11 @@ impl App {
             cpu_history: Vec::with_capacity(500),
             memory_history: Vec::with_capacity(500),
             token_speed_history: Vec::with_capacity(500),
+            networks: sysinfo::Networks::new_with_refreshed_list(),
+            net_rx_speed: 0.0,
+            net_tx_speed: 0.0,
+            net_rx_history: Vec::with_capacity(500),
+            net_tx_history: Vec::with_capacity(500),
             focus_pane: FocusPane::default(),
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),
@@ -2762,6 +2777,25 @@ impl App {
         if self.token_speed_history.len() > 1000 {
             self.token_speed_history.remove(0);
         }
+
+        // Refresh network throughput (bytes since last refresh, ~1s interval)
+        self.networks.refresh();
+        let mut rx_total: u64 = 0;
+        let mut tx_total: u64 = 0;
+        for (_, net) in &self.networks {
+            rx_total += net.received();
+            tx_total += net.transmitted();
+        }
+        self.net_rx_speed = rx_total as f32;
+        self.net_tx_speed = tx_total as f32;
+        self.net_rx_history.push(rx_total);
+        self.net_tx_history.push(tx_total);
+        if self.net_rx_history.len() > 1000 {
+            self.net_rx_history.remove(0);
+        }
+        if self.net_tx_history.len() > 1000 {
+            self.net_tx_history.remove(0);
+        }
     }
 
     /// Switch to a new view with transition animation
@@ -2887,6 +2921,13 @@ impl App {
             ref mut transition_progress,
             cpu_usage,
             memory_usage,
+            ref cpu_history,
+            ref memory_history,
+            ref token_speed_history,
+            net_rx_speed,
+            net_tx_speed,
+            ref net_rx_history,
+            ref net_tx_history,
             focus_pane,
             animation_frame,
             ref wave_ticker,
@@ -2974,9 +3015,13 @@ impl App {
                         self.thinking,
                         cpu_usage,
                         memory_usage,
-                        &self.cpu_history,
-                        &self.memory_history,
-                        &self.token_speed_history,
+                        cpu_history,
+                        memory_history,
+                        token_speed_history,
+                        net_rx_speed,
+                        net_tx_speed,
+                        net_rx_history,
+                        net_tx_history,
                     );
                 }
                 ViewState::Ide => {
@@ -3546,6 +3591,11 @@ mod tests {
             cpu_history: Vec::with_capacity(500),
             memory_history: Vec::with_capacity(500),
             token_speed_history: Vec::with_capacity(500),
+            networks: sysinfo::Networks::new_with_refreshed_list(),
+            net_rx_speed: 0.0,
+            net_tx_speed: 0.0,
+            net_rx_history: Vec::with_capacity(500),
+            net_tx_history: Vec::with_capacity(500),
             focus_pane: FocusPane::default(),
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),
@@ -3612,6 +3662,11 @@ mod tests {
             cpu_history: Vec::with_capacity(500),
             memory_history: Vec::with_capacity(500),
             token_speed_history: Vec::with_capacity(500),
+            networks: sysinfo::Networks::new_with_refreshed_list(),
+            net_rx_speed: 0.0,
+            net_tx_speed: 0.0,
+            net_rx_history: Vec::with_capacity(500),
+            net_tx_history: Vec::with_capacity(500),
             focus_pane: FocusPane::default(),
             animation_frame: 0,
             wave_ticker: crate::ui::wave::WaveTicker::new(),

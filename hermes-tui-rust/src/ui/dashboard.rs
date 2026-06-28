@@ -1,9 +1,21 @@
 use crate::state::config::ThemeColors;
 use ratatui::{layout::Rect, Frame};
 
+/// Format a byte-per-second value into a human-readable string.
+fn format_speed(bytes_per_sec: f32) -> String {
+    if bytes_per_sec >= 1_048_576.0 {
+        format!("{:.1} MB/s", bytes_per_sec / 1_048_576.0)
+    } else if bytes_per_sec >= 1024.0 {
+        format!("{:.0} KB/s", bytes_per_sec / 1024.0)
+    } else {
+        format!("{:.0} B/s", bytes_per_sec)
+    }
+}
+
 pub struct DashboardView;
 
 impl DashboardView {
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         frame: &mut Frame,
         area: Rect,
@@ -15,21 +27,29 @@ impl DashboardView {
         cpu_history: &[u64],
         memory_history: &[u64],
         token_speed_history: &[u64],
+        net_rx_speed: f32,
+        net_tx_speed: f32,
+        _net_rx_history: &[u64],
+        _net_tx_history: &[u64],
     ) {
-        // TODO: This is a prototype layout matching the React example.
-        // The telemetry values are currently hardcoded or derived from time.
-        // Future work: Connect this to real system metrics (CPU/MEM/NET).
-
         use ratatui::layout::{Alignment, Constraint, Direction, Layout};
         use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
         use ratatui::widgets::{Block, BorderType, Borders, Gauge, Padding, Paragraph, Sparkline};
 
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as usize;
-        let offset = (time / 100) % 6;
+        // ── Gruvbox vibrant palette ──
+        const GRUVBOX_RED: Color = Color::Rgb(251, 73, 52);
+        const GRUVBOX_GREEN: Color = Color::Rgb(184, 187, 38);
+        const GRUVBOX_YELLOW: Color = Color::Rgb(250, 189, 47);
+        const GRUVBOX_BLUE: Color = Color::Rgb(131, 165, 152);
+        const GRUVBOX_PURPLE: Color = Color::Rgb(211, 134, 155);
+        const GRUVBOX_AQUA: Color = Color::Rgb(142, 192, 124);
+        const GRUVBOX_ORANGE: Color = Color::Rgb(254, 128, 25);
+        const GRUVBOX_BG: Color = Color::Rgb(40, 40, 40);
+        const GRUVBOX_FG: Color = Color::Rgb(235, 219, 178);
+        const GRUVBOX_DIM: Color = Color::Rgb(146, 131, 116);
+
+        let anim = animation_frame as usize;
 
         // Main layout
         let chunks = Layout::default()
@@ -40,30 +60,22 @@ impl DashboardView {
             ])
             .split(area);
 
-        // Title
-        // ── Gruvbox vibrant palette ──
-        const GRUVBOX_COLORS: &[Color] = &[
-            Color::Rgb(251, 73, 52),   // bright_red    #fb4934
-            Color::Rgb(184, 187, 38),  // bright_green  #b8bb26
-            Color::Rgb(250, 189, 47),  // bright_yellow #fabd2f
-            Color::Rgb(131, 165, 152), // bright_blue   #83a598
-            Color::Rgb(211, 134, 155), // bright_purple #d3869b
-            Color::Rgb(142, 192, 124), // bright_aqua   #8ec07c
-            Color::Rgb(254, 128, 25),  // bright_orange #fe8019
-            Color::Rgb(104, 157, 106), // aqua          #689d6a
+        // ── Animated KRAKEN ASCII title ──
+        const TITLE_COLORS: &[Color] = &[
+            GRUVBOX_RED, GRUVBOX_GREEN, GRUVBOX_YELLOW, GRUVBOX_BLUE,
+            GRUVBOX_PURPLE, GRUVBOX_AQUA, GRUVBOX_ORANGE,
         ];
-        const NUM_COLORS: usize = GRUVBOX_COLORS.len();
+        const NUM_COLORS: usize = TITLE_COLORS.len();
 
         let title_text = r"██   ██ ██████  █████  ██   ██ ███████ ███    ██     █████  ██████  ███████ ███    ██ ████████
-██  ██  ██   ██ ██   ██ ██  ██  ██      ████   ██    ██   ██ ██       ██      ████   ██    ██   
-█████   ██████  ███████ █████   █████   ██ ██  ██    ███████ ██   ███ █████   ██ ██  ██    ██   
-██  ██  ██   ██ ██   ██ ██  ██  ██      ██  ██ ██    ██   ██ ██    ██ ██      ██  ██ ██    ██   
+██  ██  ██   ██ ██   ██ ██  ██  ██      ████   ██    ██   ██ ██       ██      ████   ██    ██
+█████   ██████  ███████ █████   █████   ██ ██  ██    ███████ ██   ███ █████   ██ ██  ██    ██
+██  ██  ██   ██ ██   ██ ██  ██  ██      ██  ██ ██    ██   ██ ██    ██ ██      ██  ██ ██    ██
 ██   ██ ██   ██ ██   ██ ██   ██ ███████ ██   ████    ██   ██  ██████  ███████ ██   ████    ██";
 
-        let anim = animation_frame as usize;
         let mut title_lines = Vec::new();
         for (i, line) in title_text.lines().enumerate() {
-            let c = GRUVBOX_COLORS[(i + anim) % NUM_COLORS];
+            let c = TITLE_COLORS[(i + anim) % NUM_COLORS];
             title_lines.push(Line::from(Span::styled(
                 line,
                 Style::default().fg(c).add_modifier(Modifier::BOLD),
@@ -74,7 +86,7 @@ impl DashboardView {
             .block(Block::default().padding(Padding::new(0, 0, 1, 0)));
         frame.render_widget(title_para, chunks[0]);
 
-        // Content border
+        // ── Content border ──
         let content_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Thick)
@@ -93,13 +105,13 @@ impl DashboardView {
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(30), // Left column (GIF/Telemetry)
+                Constraint::Percentage(30), // Left column (Telemetry)
                 Constraint::Percentage(70), // Right column (Lists)
             ])
             .spacing(2)
             .split(inner_area);
 
-        // Left Column
+        // ── Left Column ──
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -109,20 +121,16 @@ impl DashboardView {
             .spacing(1)
             .split(content_chunks[0]);
 
-        // Telemetry
-        let cpu = cpu_usage as u16;
-        let mem = memory_usage as u16;
-        let net = 200 + (offset * 100);
-
+        // ── Telemetry Block ──
         let tel_block = Block::default()
             .title(Span::styled(
                 " TELEMETRY ",
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(GRUVBOX_AQUA)
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(GRUVBOX_DIM))
             .padding(Padding::new(1, 1, 1, 1));
 
         let tel_inner = tel_block.inner(left_chunks[1]);
@@ -135,27 +143,34 @@ impl DashboardView {
                 Constraint::Length(3), // CPU Sparkline
                 Constraint::Length(2), // MEM Gauge
                 Constraint::Length(3), // MEM Sparkline
-                Constraint::Length(2), // NET
-                Constraint::Length(4), // TOKEN SPEED Sparkline
+                Constraint::Length(2), // NET RX Gauge
+                Constraint::Length(2), // NET TX Gauge
+                Constraint::Length(3), // TOKEN SPEED Sparkline
                 Constraint::Min(0),
             ])
             .spacing(0)
             .split(tel_inner);
 
-        // CPU Gauge
+        let cpu = cpu_usage as u16;
+        let mem = memory_usage as u16;
+
+        // ── CPU Gauge ──
         let cpu_gauge = Gauge::default()
-            .block(Block::default().title("CPU Usage"))
+            .block(Block::default().title(Span::styled(
+                format!("CPU Usage: {cpu}%"),
+                Style::default().fg(GRUVBOX_BLUE).add_modifier(Modifier::BOLD),
+            )))
             .gauge_style(
                 Style::default()
-                    .fg(Color::Rgb(131, 165, 152))
-                    .bg(Color::Rgb(40, 40, 40)),
+                    .fg(GRUVBOX_BLUE)
+                    .bg(GRUVBOX_BG),
             )
             .percent(cpu);
         frame.render_widget(cpu_gauge, tel_layout[0]);
 
-        // CPU Sparkline (Dynamic Bins)
+        // ── CPU Sparkline ──
         let cpu_bins = tel_layout[1].width as usize;
-        let cpu_data: Vec<u64> = cpu_history
+        let cpu_spark_data: Vec<u64> = cpu_history
             .iter()
             .rev()
             .take(cpu_bins)
@@ -165,24 +180,33 @@ impl DashboardView {
             .rev()
             .collect();
         let cpu_spark = Sparkline::default()
-            .data(&cpu_data)
-            .style(Style::default().fg(Color::Rgb(131, 165, 152)));
+            .block(Block::default().title(Span::styled(
+                " CPU History ",
+                Style::default()
+                    .fg(GRUVBOX_DIM)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .data(&cpu_spark_data)
+            .style(Style::default().fg(GRUVBOX_BLUE));
         frame.render_widget(cpu_spark, tel_layout[1]);
 
-        // MEM Gauge
+        // ── MEM Gauge ──
         let mem_gauge = Gauge::default()
-            .block(Block::default().title("Memory"))
+            .block(Block::default().title(Span::styled(
+                format!("Memory: {mem}%"),
+                Style::default().fg(GRUVBOX_PURPLE).add_modifier(Modifier::BOLD),
+            )))
             .gauge_style(
                 Style::default()
-                    .fg(Color::Rgb(211, 134, 155))
-                    .bg(Color::Rgb(40, 40, 40)),
+                    .fg(GRUVBOX_PURPLE)
+                    .bg(GRUVBOX_BG),
             )
             .percent(mem);
         frame.render_widget(mem_gauge, tel_layout[2]);
 
-        // MEM Sparkline (Dynamic Bins)
+        // ── MEM Sparkline ──
         let mem_bins = tel_layout[3].width as usize;
-        let mem_data: Vec<u64> = memory_history
+        let mem_spark_data: Vec<u64> = memory_history
             .iter()
             .rev()
             .take(mem_bins)
@@ -192,28 +216,50 @@ impl DashboardView {
             .rev()
             .collect();
         let mem_spark = Sparkline::default()
-            .data(&mem_data)
-            .style(Style::default().fg(Color::Rgb(211, 134, 155)));
+            .block(Block::default().title(Span::styled(
+                " Memory History ",
+                Style::default()
+                    .fg(GRUVBOX_DIM)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .data(&mem_spark_data)
+            .style(Style::default().fg(GRUVBOX_PURPLE));
         frame.render_widget(mem_spark, tel_layout[3]);
 
-        // NET Info
-        let is_streaming = offset % 2 == 0;
-        let net_text = Line::from(vec![
-            Span::styled("NET ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                if is_streaming {
-                    ">> STREAMING "
-                } else {
-                    "<> IDLE      "
-                },
-                Style::default().fg(Color::Rgb(250, 189, 47)),
-            ),
-            Span::styled(format!("{net}kb/s"), Style::default().fg(Color::Gray)),
-        ]);
-        frame.render_widget(Paragraph::new(net_text), tel_layout[4]);
+        // ── NET Receive Gauge ──
+        // Scale gauge to 1 MB/s max so it shows useful movement
+        const NET_MAX_BYTES: f32 = 1_048_576.0; // 1 MB/s
+        let net_rx_pct = ((net_rx_speed / NET_MAX_BYTES) * 100.0).min(100.0) as u16;
+        let net_rx_gauge = Gauge::default()
+            .block(Block::default().title(Span::styled(
+                format!("Receive: {}", format_speed(net_rx_speed)),
+                Style::default().fg(GRUVBOX_AQUA).add_modifier(Modifier::BOLD),
+            )))
+            .gauge_style(
+                Style::default()
+                    .fg(GRUVBOX_AQUA)
+                    .bg(GRUVBOX_BG),
+            )
+            .percent(net_rx_pct);
+        frame.render_widget(net_rx_gauge, tel_layout[4]);
 
-        // TOKEN SPEED Sparkline (Dynamic Bins)
-        let token_bins = tel_layout[5].width as usize;
+        // ── NET Transmit Gauge ──
+        let net_tx_pct = ((net_tx_speed / NET_MAX_BYTES) * 100.0).min(100.0) as u16;
+        let net_tx_gauge = Gauge::default()
+            .block(Block::default().title(Span::styled(
+                format!("Transmit: {}", format_speed(net_tx_speed)),
+                Style::default().fg(GRUVBOX_YELLOW).add_modifier(Modifier::BOLD),
+            )))
+            .gauge_style(
+                Style::default()
+                    .fg(GRUVBOX_YELLOW)
+                    .bg(GRUVBOX_BG),
+            )
+            .percent(net_tx_pct);
+        frame.render_widget(net_tx_gauge, tel_layout[5]);
+
+        // ── TOKEN SPEED Sparkline ──
+        let token_bins = tel_layout[6].width as usize;
         let token_data: Vec<u64> = token_speed_history
             .iter()
             .rev()
@@ -223,21 +269,20 @@ impl DashboardView {
             .into_iter()
             .rev()
             .collect();
+        let token_max = *token_data.iter().max().unwrap_or(&1).max(&1);
         let token_spark = Sparkline::default()
-            .block(
-                Block::default().title(Span::styled(
-                    "TOKEN SPEED (tokens/s)",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                )),
-            )
+            .block(Block::default().title(Span::styled(
+                " TOKEN SPEED (tokens/s) ",
+                Style::default()
+                    .fg(GRUVBOX_DIM)
+                    .add_modifier(Modifier::BOLD),
+            )))
             .data(&token_data)
-            .max(100)
-            .style(Style::default().fg(Color::Rgb(250, 189, 47)));
-        frame.render_widget(token_spark, tel_layout[5]);
+            .max(token_max)
+            .style(Style::default().fg(GRUVBOX_YELLOW));
+        frame.render_widget(token_spark, tel_layout[6]);
 
-        // Right Column
+        // ── Right Column ──
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -248,37 +293,30 @@ impl DashboardView {
             .spacing(1)
             .split(content_chunks[1]);
 
-        // Available Tools
+        // ── Available Tools ──
         let mut tools_lines = Vec::new();
-        tools_lines.push(Line::from(vec![
-            Span::styled("browser:       ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "browser_back, browser_click, browser_close, browser_open",
-                Style::default().fg(Color::Gray),
-            ),
-        ]));
-        tools_lines.push(Line::from(vec![
-            Span::styled("browser-cdp:   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "browser_cdp_call, browser_dialog_accept, browser_dialog_dismiss",
-                Style::default().fg(Color::Gray),
-            ),
-        ]));
-        tools_lines.push(Line::from(vec![
-            Span::styled("clarify:       ", Style::default().fg(Color::DarkGray)),
-            Span::styled("clarify", Style::default().fg(Color::Rgb(211, 134, 155))),
-        ]));
-        tools_lines.push(Line::from(vec![
-            Span::styled("code_execution:", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "execute_code",
-                Style::default().fg(Color::Rgb(250, 189, 47)),
-            ),
-        ]));
+        let tools_data = [
+            ("browser:       ", "browser_back, browser_click, browser_close, browser_open"),
+            ("browser-cdp:   ", "browser_cdp_call, browser_dialog_accept, browser_dialog_dismiss"),
+            ("clarify:       ", "clarify"),
+            ("code_execution:", "execute_code"),
+        ];
+        let tools_colors = [
+            (GRUVBOX_FG, GRUVBOX_DIM),
+            (GRUVBOX_FG, GRUVBOX_DIM),
+            (GRUVBOX_PURPLE, GRUVBOX_DIM),
+            (GRUVBOX_YELLOW, GRUVBOX_DIM),
+        ];
+        for (i, (label, value)) in tools_data.iter().enumerate() {
+            tools_lines.push(Line::from(vec![
+                Span::styled(*label, Style::default().fg(GRUVBOX_DIM)),
+                Span::styled(*value, Style::default().fg(tools_colors[i].0)),
+            ]));
+        }
         tools_lines.push(Line::from(Span::styled(
             "(and 22 more toolsets...)",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(GRUVBOX_DIM)
                 .add_modifier(Modifier::ITALIC),
         )));
         frame.render_widget(
@@ -287,25 +325,25 @@ impl DashboardView {
                     .title(Span::styled(
                         " Available Tools ",
                         Style::default()
-                            .fg(Color::Rgb(250, 189, 47))
+                            .fg(GRUVBOX_YELLOW)
                             .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::DarkGray)),
+                    .border_style(Style::default().fg(GRUVBOX_DIM)),
             ),
             right_chunks[0],
         );
 
-        // MCP Servers
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][offset % 10];
+        // ── MCP Servers ──
+        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][anim % 10];
         let mcp_lines = vec![Line::from(vec![
             Span::styled(
                 "playwright (stdio) — ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(GRUVBOX_DIM),
             ),
             Span::styled(
                 format!("connecting {spinner}"),
-                Style::default().fg(Color::Rgb(250, 189, 47)),
+                Style::default().fg(GRUVBOX_YELLOW),
             ),
         ])];
         frame.render_widget(
@@ -314,16 +352,16 @@ impl DashboardView {
                     .title(Span::styled(
                         " MCP Servers ",
                         Style::default()
-                            .fg(Color::Rgb(250, 189, 47))
+                            .fg(GRUVBOX_YELLOW)
                             .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::DarkGray)),
+                    .border_style(Style::default().fg(GRUVBOX_DIM)),
             ),
             right_chunks[1],
         );
 
-        // Available Skills
+        // ── Available Skills ──
         let mut skills_lines = Vec::new();
         let skills = [
             ("autonomous-ai-agents", "coding-agents, hermes-agent..."),
@@ -335,8 +373,8 @@ impl DashboardView {
         ];
         for (cat, tools) in skills {
             skills_lines.push(Line::from(vec![
-                Span::styled(format!("{cat:25}"), Style::default().fg(Color::DarkGray)),
-                Span::styled(tools, Style::default().fg(Color::Gray)),
+                Span::styled(format!("{cat:25}"), Style::default().fg(GRUVBOX_DIM)),
+                Span::styled(tools, Style::default().fg(GRUVBOX_FG)),
             ]));
         }
         frame.render_widget(
@@ -344,7 +382,7 @@ impl DashboardView {
                 Block::default().title(Span::styled(
                     " Available Skills ",
                     Style::default()
-                        .fg(Color::Rgb(250, 189, 47))
+                        .fg(GRUVBOX_YELLOW)
                         .add_modifier(Modifier::BOLD),
                 )),
             ),
