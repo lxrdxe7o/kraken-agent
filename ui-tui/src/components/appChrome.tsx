@@ -248,9 +248,9 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
-  cost: boolean
   duration: boolean
   reasoning: boolean
+  subagents: boolean
   voice: boolean
 }
 
@@ -265,7 +265,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    cost: w >= 96
+    subagents: w >= 92
   }
 }
 
@@ -401,7 +401,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -427,7 +427,6 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
-  showCost,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -495,6 +494,7 @@ export function StatusRule({
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -507,7 +507,7 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -529,7 +529,11 @@ export function StatusRule({
   const showSessionCount = !isTopLine && !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = !isTopLine && segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const showCostSeg = !isTopLine && segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
-  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+  const showSubagents = !isTopLine && segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+  const showResumeHint = !isTopLine && !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !isTopLine && !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
@@ -551,10 +555,7 @@ export function StatusRule({
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
         {isTopLine ? (
           <>
-            {/* Leading pinned chrome: border + busy face / idle status. When a
-                notice occupies the slot the status text is dropped — the notice
-                renders as a separate shrinkable box below so a long notice
-                ellipsizes instead of crushing model │ ctx (R3-M7). */}
+            {/* Pinned essentials — model + context never shrink, always visible. */}
             <Box flexDirection="row" flexShrink={0}>
               <Text color={t.color.border}>{'─ '}</Text>
               {busy ? (
@@ -647,6 +648,17 @@ export function StatusRule({
               <Text color={t.color.muted} wrap="truncate-end">
                 {' │ '}
                 {bgCount} bg
+              </Text>
+            ) : null}
+            {showSubagents ? (
+              <Text color={t.color.muted} wrap="truncate-end">
+                {' │ '}⛓ {subagentCount}
+              </Text>
+            ) : null}
+            {showResumeHint ? (
+              <Text color={t.color.muted} dim wrap="truncate-end">
+                {' │ '}
+                {resumeHintText}
               </Text>
             ) : null}
             {showCostSeg ? (
@@ -796,7 +808,6 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
-  showCost: boolean
   status: string
   statusColor: string
   t: Theme
