@@ -7078,23 +7078,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         from hermes_cli.main import _relative_time
 
-        print()
+        _cprint("")
         if reason == "history":
-            print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+            _cprint("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
         else:
-            print("  Recent sessions:")
-        print()
-        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            _cprint("  Recent sessions:")
+        _cprint("")
+        _cprint(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        _cprint(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
-        print()
-        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
-        print("  Example: /resume 2")
-        print()
+            _cprint(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+        _cprint("")
+        _cprint("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
+        _cprint("  Example: /resume 2")
+        _cprint("")
         return True
 
     def show_history(self):
