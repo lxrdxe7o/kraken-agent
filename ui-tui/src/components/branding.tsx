@@ -4,7 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
-import type { Theme } from '../theme.js'
+import { KRAKEN_BORDER, type Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
 const LOADER_TICK_MS = 120
@@ -285,7 +285,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   return (
-    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle={KRAKEN_BORDER} marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
         <Box flexDirection="column" marginRight={2} width={leftW}>
           <ArtLines lines={heroLines} />
@@ -421,7 +421,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
 export function Panel({ sections, t, title }: PanelProps) {
   return (
-    <Box borderColor={t.color.border} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle={KRAKEN_BORDER} flexDirection="column" paddingX={2} paddingY={1}>
       <Box justifyContent="center" marginBottom={1}>
         <Text bold color={t.color.primary}>
           {title}

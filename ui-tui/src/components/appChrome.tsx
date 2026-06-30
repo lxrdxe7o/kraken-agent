@@ -14,7 +14,7 @@ import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
-import type { Theme } from '../theme.js'
+import { KRAKEN_BORDER, type Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
@@ -248,6 +248,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   reasoning: boolean
   subagents: boolean
@@ -265,7 +266,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cost: w >= 96
   }
 }
 
@@ -507,6 +509,7 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const costText = typeof usage.cost_usd === 'number' && usage.cost_usd > 0 ? `$${usage.cost_usd.toFixed(4)}` : ''
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -528,7 +531,7 @@ export function StatusRule({
   const showVoice = !isTopLine && segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !isTopLine && !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = !isTopLine && segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
-  const showCostSeg = !isTopLine && segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+  const showCostSeg = !isTopLine && segs.cost && !!costText && fits(SEP + stringWidth(costText))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = !isTopLine && segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
   const resumeHintText =
@@ -700,7 +703,7 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
     <Box
       alignSelf="flex-start"
       borderColor={color}
-      borderStyle="double"
+      borderStyle={KRAKEN_BORDER}
       flexDirection="column"
       marginTop={1}
       opaque

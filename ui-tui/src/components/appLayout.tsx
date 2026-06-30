@@ -23,6 +23,7 @@ import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { RavenSidePanel } from './ravenSidePanel.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
@@ -448,9 +449,16 @@ export const AppLayout = memo(function AppLayout({
               <AgentsOverlayPane />
             </PerfPane>
           ) : (
-            <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
-            </PerfPane>
+            <Box flexDirection="row" flexGrow={1}>
+              <PerfPane id="transcript">
+                <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              </PerfPane>
+              {composer.cols >= 80 && (
+                <Box flexShrink={0} marginLeft={1} width={24}>
+                  <RavenSidePanel width={22} />
+                </Box>
+              )}
+            </Box>
           )}
         </Box>
 
